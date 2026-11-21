@@ -85,7 +85,16 @@ jobs:
           echo "CFBundleShortVersionString=$SHORT_VERSION"
           echo "CFBundleVersion=$BUILD_NUMBER"
           test -x "$APP_PATH/$EXECUTABLE"
-          lipo -verify_arch arm64 "$APP_PATH/$EXECUTABLE"
+
+          ARCHS="$(xcrun lipo -archs "$APP_PATH/$EXECUTABLE")"
+          echo "Binary architectures: $ARCHS"
+          case " $ARCHS " in
+            *" arm64 "*) ;;
+            *)
+              echo "Error: app executable does not contain arm64."
+              exit 1
+              ;;
+          esac
 
           echo "Validated: $BUNDLE_ID $SHORT_VERSION ($BUILD_NUMBER), arm64"
 
