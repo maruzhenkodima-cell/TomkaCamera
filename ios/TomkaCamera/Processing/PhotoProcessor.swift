@@ -10,13 +10,13 @@ struct PhotoProcessingResult {
     let outputData: Data
     let mergedFrameCount: Int
     let outputScale: CGFloat
-    let usedSuperResolution: Bool
+    let usedHighResolutionUpscale: Bool
     let processingDescription: String
 }
 
 enum PhotoProcessor {
     private static let maximumOutputPixels: CGFloat = 48_000_000
-    private static let maximumSuperResolutionScale: CGFloat = 2.0
+    private static let maximumUpscaleScale: CGFloat = 2.0
 
     private static let context = CIContext(options: [
         .cacheIntermediates: false
@@ -42,12 +42,11 @@ enum PhotoProcessor {
     private struct AlignedFrame {
         let image: CIImage
         let translation: CGPoint
-        let confidence: Float
     }
 
     static func process(
         _ frameData: [Data],
-        enableSuperResolution: Bool = true
+        enableHighResolutionUpscale: Bool = true
     ) throws -> PhotoProcessingResult {
         guard let firstData = frameData.first,
               let originalImage = UIImage(data: firstData),
@@ -74,8 +73,7 @@ enum PhotoProcessor {
         var alignedFrames: [AlignedFrame] = [
             AlignedFrame(
                 image: reference,
-                translation: .zero,
-                confidence: 1
+                translation: .zero
             )
         ]
 
@@ -101,8 +99,7 @@ enum PhotoProcessor {
             alignedFrames.append(
                 AlignedFrame(
                     image: floating,
-                    translation: alignment.translation,
-                    confidence: alignment.confidence
+                    translation: alignment.translation
                 )
             )
         }
@@ -250,7 +247,7 @@ enum PhotoProcessor {
 
         if usedSuperResolution {
             processingDescription = String(
-                format: "Объединено %d кадра · реконструкция %.2f× · медианное подавление выбросов",
+                format: "Объединено %d кадра · Lanczos-увеличение %.2f× · медианное подавление выбросов",
                 alignedFrames.count,
                 outputScale
             )
@@ -307,7 +304,7 @@ enum PhotoProcessor {
 
             guard let observation = request.results?.first
                     as? VNImageTranslationAlignmentObservation,
-                  observation.confidence >= 0.2 else {
+                  observation.confidence >= 0.35 else {
                 return nil
             }
 
@@ -354,7 +351,7 @@ enum PhotoProcessor {
 
     private static func thumbnail(for image: CIImage) -> CGImage? {
         let extent = image.extent
-        let maximumDimension: CGFloat = 1024
+        let maximumDimension: CGFloat = 2048
         let scale = min(
             1,
             maximumDimension / max(extent.width, extent.height)
