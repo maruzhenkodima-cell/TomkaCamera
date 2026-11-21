@@ -4,6 +4,30 @@ import Photos
 import UniformTypeIdentifiers
 import UIKit
 
+enum CameraFlashMode: String, CaseIterable, Identifiable {
+    case off
+    case auto
+    case on
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .off: return "Выкл."
+        case .auto: return "Авто"
+        case .on: return "Вкл."
+        }
+    }
+
+    var captureMode: AVCaptureDevice.FlashMode {
+        switch self {
+        case .off: return .off
+        case .auto: return .auto
+        case .on: return .on
+        }
+    }
+}
+
 final class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
@@ -22,6 +46,16 @@ final class CameraManager: NSObject, ObservableObject {
     private var isBurstRunning = false
     private var burstUsesProRAW = false
     private var pendingRawPhotoData: Data?
+    private var burstFlashMode: AVCaptureDevice.FlashMode = .off
+    private var savedBurstModes: SavedAutomaticModes?
+    private var shouldRunSession = true
+    private var sessionObservers: [NSObjectProtocol] = []
+
+    private struct SavedAutomaticModes {
+        let exposure: AVCaptureDevice.ExposureMode?
+        let focus: AVCaptureDevice.FocusMode?
+        let whiteBalance: AVCaptureDevice.WhiteBalanceMode?
+    }
 
     // These values are read and written only on sessionQueue.
     private var currentISO: Double = 100
@@ -40,6 +74,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var mergedFrameCount = 1
 
     @Published var multiFrameEnabled = true
+    @Published var flashMode: CameraFlashMode = .off
+    @Published var hasFlash = false
     @Published var proRAWAvailable = false
     @Published var useProRAW = false
     @Published var showCompositionGrid = true
@@ -62,6 +98,83 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isExposureManual = false
     @Published var isFocusManual = false
     @Published var isWhiteBalanceManual = false
+
+    override init() {
+        super.init()
+        installSessionObservers()
+    }
+
+    deinit {
+        sessionObservers.forEach(NotificationCenter.default.removeObserver)
+        let captureSession = session
+        let queue = sessionQueue
+        queue.async {
+            if captureSession.isRunning {
+                captureSession.stopRunning()
+            }
+        }
+    }
+
+    private func installSessionObservers() {
+        let center = NotificationCenter.default
+
+        sessionObservers.append(center.addObserver(
+            forName: AVCaptureSession.wasInterruptedNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] _ in
+            self?.statusMessage = "Камера временно приостановлена системой."
+        })
+
+        sessionObservers.append(center.addObserver(
+            forName: AVCaptureSession.interruptionEndedNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] _ in
+            self?.statusMessage = nil
+            self?.restartSessionIfNeeded()
+        })
+
+        sessionObservers.append(center.addObserver(
+            forName: AVCaptureSession.runtimeErrorNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError
+
+            if error?.code == .mediaServicesWereReset {
+                self.statusMessage = "Восстанавливаю камеру…"
+                self.restartSessionIfNeeded()
+            } else {
+                self.errorMessage = error?.localizedDescription
+                    ?? "Произошла ошибка работы камеры."
+            }
+        })
+    }
+
+    func setSessionActive(_ active: Bool) {
+        sessionQueue.async {
+            self.shouldRunSession = active
+
+            if active {
+                if self.isConfigured && !self.session.isRunning {
+                    self.session.startRunning()
+                }
+            } else if self.session.isRunning {
+                self.session.stopRunning()
+            }
+        }
+    }
+
+    private func restartSessionIfNeeded() {
+        sessionQueue.async {
+            guard self.shouldRunSession, self.isConfigured else { return }
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
+        }
+    }
 
     var shutterSpeedLabel: String {
         let minimum = max(minShutterSeconds, 0.00001)
@@ -198,6 +311,8 @@ final class CameraManager: NSObject, ObservableObject {
 
                 DispatchQueue.main.async {
                     self.proRAWAvailable = proRAWAvailable
+                    self.hasFlash = camera.hasFlash &&
+                        !self.photoOutput.supportedFlashModes.isEmpty
                     self.maxZoomFactor = max(1.0, supportedZoom)
                     self.minISO = minimumISO
                     self.maxISO = max(minimumISO + 1, maximumISO)
@@ -214,7 +329,9 @@ final class CameraManager: NSObject, ObservableObject {
 
                 self.isConfigured = true
                 self.session.commitConfiguration()
-                self.session.startRunning()
+                if self.shouldRunSession {
+                    self.session.startRunning()
+                }
             } catch {
                 self.session.commitConfiguration()
                 self.publishError(error.localizedDescription)
@@ -525,6 +642,7 @@ final class CameraManager: NSObject, ObservableObject {
     func takePhoto() {
         let useMultiFrame = multiFrameEnabled
         let requestProRAW = useProRAW && proRAWAvailable
+        let selectedFlashMode = flashMode.captureMode
 
         sessionQueue.async {
             guard self.session.isRunning, !self.isBurstRunning else { return }
@@ -533,8 +651,19 @@ final class CameraManager: NSObject, ObservableObject {
             self.pendingBurstFrames.removeAll(keepingCapacity: true)
             self.pendingRawPhotoData = nil
             self.burstUsesProRAW = requestProRAW
-            self.requestedBurstCount = requestProRAW ? 1 : (useMultiFrame ? 3 : 1)
+            self.burstFlashMode = self.photoOutput.supportedFlashModes.contains(selectedFlashMode)
+                ? selectedFlashMode
+                : .off
+
+            let canUseBurst = useMultiFrame &&
+                !requestProRAW &&
+                self.burstFlashMode == .off
+            self.requestedBurstCount = canUseBurst ? 3 : 1
             let captureCount = self.requestedBurstCount
+
+            if captureCount > 1 {
+                self.freezeAutomaticControlsForBurst()
+            }
 
             DispatchQueue.main.async {
                 self.isCapturing = true
@@ -548,6 +677,81 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func freezeAutomaticControlsForBurst() {
+        guard let camera = cameraDevice else { return }
+
+        do {
+            try camera.lockForConfiguration()
+
+            var exposureMode: AVCaptureDevice.ExposureMode?
+            var focusMode: AVCaptureDevice.FocusMode?
+            var whiteBalanceMode: AVCaptureDevice.WhiteBalanceMode?
+
+            if camera.exposureMode != .custom &&
+                camera.exposureMode != .locked &&
+                camera.isExposureModeSupported(.locked) {
+                exposureMode = camera.exposureMode
+                camera.exposureMode = .locked
+            }
+
+            if camera.focusMode != .locked &&
+                camera.isFocusModeSupported(.locked) {
+                focusMode = camera.focusMode
+                camera.setFocusModeLocked(
+                    lensPosition: camera.lensPosition,
+                    completionHandler: nil
+                )
+            }
+
+            if camera.whiteBalanceMode != .locked &&
+                camera.isWhiteBalanceModeSupported(.locked) {
+                whiteBalanceMode = camera.whiteBalanceMode
+                camera.setWhiteBalanceModeLocked(
+                    with: camera.deviceWhiteBalanceGains,
+                    completionHandler: nil
+                )
+            }
+
+            camera.unlockForConfiguration()
+            savedBurstModes = SavedAutomaticModes(
+                exposure: exposureMode,
+                focus: focusMode,
+                whiteBalance: whiteBalanceMode
+            )
+        } catch {
+            savedBurstModes = nil
+            publishError("Не удалось зафиксировать настройки для серии: \\(error.localizedDescription)")
+        }
+    }
+
+    private func restoreAutomaticControlsAfterBurst() {
+        guard let camera = cameraDevice, let saved = savedBurstModes else { return }
+        savedBurstModes = nil
+
+        do {
+            try camera.lockForConfiguration()
+
+            if let mode = saved.exposure,
+               camera.isExposureModeSupported(mode) {
+                camera.exposureMode = mode
+            }
+
+            if let mode = saved.focus,
+               camera.isFocusModeSupported(mode) {
+                camera.focusMode = mode
+            }
+
+            if let mode = saved.whiteBalance,
+               camera.isWhiteBalanceModeSupported(mode) {
+                camera.whiteBalanceMode = mode
+            }
+
+            camera.unlockForConfiguration()
+        } catch {
+            publishError("Не удалось вернуть автоматические настройки: \\(error.localizedDescription)")
+        }
+    }
+
     private func captureNextBurstFrame() {
         guard isBurstRunning else { return }
 
@@ -557,6 +761,7 @@ final class CameraManager: NSObject, ObservableObject {
             let rawData = pendingRawPhotoData
             pendingBurstFrames.removeAll(keepingCapacity: true)
             pendingRawPhotoData = nil
+            restoreAutomaticControlsAfterBurst()
             processCapturedFrames(frames, rawData: rawData)
             return
         }
@@ -579,6 +784,9 @@ final class CameraManager: NSObject, ObservableObject {
 
         settings.photoQualityPrioritization = .quality
         settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        if photoOutput.supportedFlashModes.contains(burstFlashMode) {
+            settings.flashMode = burstFlashMode
+        }
 
         let identifier = settings.uniqueID
         let delegate = PhotoFrameCaptureDelegate { [weak self] finishedID, processedData, rawData, error in
@@ -602,6 +810,7 @@ final class CameraManager: NSObject, ObservableObject {
                     self.captureNextBurstFrame()
                 } else {
                     self.isBurstRunning = false
+                    self.restoreAutomaticControlsAfterBurst()
                     DispatchQueue.main.async {
                         self.isCapturing = false
                         self.errorMessage = error?.localizedDescription
