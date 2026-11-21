@@ -19,12 +19,15 @@ final class CameraManager: NSObject, ObservableObject {
     private var pendingBurstFrames: [Data] = []
     private var requestedBurstCount = 1
     private var isBurstRunning = false
+    private var burstUsesProRAW = false
+    private var pendingRawPhotoData: Data?
 
     // These values are read and written only on sessionQueue.
     private var currentISO: Double = 100
     private var currentShutterPosition: Double = 0.65
     private var currentFocusPosition: Double = 0.5
     private var currentTemperature: Double = 5000
+    private var currentExposureBias: Double = 0
 
     @Published var isAuthorized = false
     @Published var errorMessage: String?
@@ -36,6 +39,10 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var mergedFrameCount = 1
 
     @Published var multiFrameEnabled = true
+    @Published var proRAWAvailable = false
+    @Published var useProRAW = false
+    @Published var showCompositionGrid = true
+    @Published var focusIndicatorPoint: CGPoint?
     @Published var zoomFactor: CGFloat = 1.0
     @Published var maxZoomFactor: CGFloat = 10.0
 
@@ -47,6 +54,9 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var maxShutterSeconds: Double = 1.0 / 4.0
     @Published var focusPosition: Double = 0.5
     @Published var colorTemperature: Double = 5000
+    @Published var exposureBias: Double = 0
+    @Published var minExposureBias: Double = -2
+    @Published var maxExposureBias: Double = 2
 
     @Published var isExposureManual = false
     @Published var isFocusManual = false
@@ -137,6 +147,15 @@ final class CameraManager: NSObject, ObservableObject {
 
                 self.photoOutput.maxPhotoQualityPrioritization = .quality
 
+                // Enable ProRAW before startRunning, as recommended by Apple.
+                let proRAWSupported = self.photoOutput.isAppleProRAWSupported
+                if proRAWSupported {
+                    self.photoOutput.isAppleProRAWEnabled = true
+                }
+                let proRAWAvailable = self.photoOutput.availableRawPhotoPixelFormatTypes.contains {
+                    AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
+                }
+
                 self.cameraDevice = camera
                 self.currentISO = Double(camera.iso)
                 self.currentFocusPosition = Double(camera.lensPosition)
@@ -171,8 +190,13 @@ final class CameraManager: NSObject, ObservableObject {
                     for: camera.deviceWhiteBalanceGains
                 )
                 self.currentTemperature = Double(temperatureAndTint.temperature)
+                self.currentExposureBias = Double(camera.exposureTargetBias)
+
+                let minimumExposureBias = Double(camera.minExposureTargetBias)
+                let maximumExposureBias = Double(camera.maxExposureTargetBias)
 
                 DispatchQueue.main.async {
+                    self.proRAWAvailable = proRAWAvailable
                     self.maxZoomFactor = max(1.0, supportedZoom)
                     self.minISO = minimumISO
                     self.maxISO = max(minimumISO + 1, maximumISO)
@@ -182,6 +206,9 @@ final class CameraManager: NSObject, ObservableObject {
                     self.shutterPosition = min(1.0, max(0.0, initialShutterPosition))
                     self.focusPosition = self.currentFocusPosition
                     self.colorTemperature = self.currentTemperature
+                    self.minExposureBias = minimumExposureBias
+                    self.maxExposureBias = maximumExposureBias
+                    self.exposureBias = self.currentExposureBias
                 }
 
                 self.isConfigured = true
@@ -305,6 +332,86 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    func setExposureBias(_ value: Double) {
+        sessionQueue.async {
+            guard let camera = self.cameraDevice else { return }
+
+            guard camera.exposureMode != .custom else {
+                self.publishError("Коррекция EV доступна в автоматическом режиме экспозиции.")
+                return
+            }
+
+            let bias = min(
+                Double(camera.maxExposureTargetBias),
+                max(Double(camera.minExposureTargetBias), value)
+            )
+
+            do {
+                try camera.lockForConfiguration()
+                camera.setExposureTargetBias(Float(bias), completionHandler: nil)
+                camera.unlockForConfiguration()
+
+                self.currentExposureBias = bias
+                DispatchQueue.main.async {
+                    self.exposureBias = bias
+                }
+            } catch {
+                self.publishError("Не удалось изменить EV: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func focus(at devicePoint: CGPoint, displayPoint: CGPoint) {
+        sessionQueue.async {
+            guard let camera = self.cameraDevice else { return }
+
+            let point = CGPoint(
+                x: min(1, max(0, devicePoint.x)),
+                y: min(1, max(0, devicePoint.y))
+            )
+
+            do {
+                try camera.lockForConfiguration()
+
+                if camera.isFocusPointOfInterestSupported {
+                    camera.focusPointOfInterest = point
+                    if camera.isFocusModeSupported(.autoFocus) {
+                        camera.focusMode = .autoFocus
+                    } else if camera.isFocusModeSupported(.continuousAutoFocus) {
+                        camera.focusMode = .continuousAutoFocus
+                    }
+                }
+
+                if !self.isExposureManual && camera.isExposurePointOfInterestSupported {
+                    camera.exposurePointOfInterest = point
+                    if camera.isExposureModeSupported(.continuousAutoExposure) {
+                        camera.exposureMode = .continuousAutoExposure
+                    } else if camera.isExposureModeSupported(.autoExpose) {
+                        camera.exposureMode = .autoExpose
+                    }
+                }
+
+                camera.unlockForConfiguration()
+                self.currentFocusPosition = Double(camera.lensPosition)
+
+                DispatchQueue.main.async {
+                    self.isFocusManual = false
+                    self.focusPosition = self.currentFocusPosition
+                    self.focusIndicatorPoint = displayPoint
+                    self.statusMessage = "Фокус и экспозамер обновлены"
+                }
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    if self.focusIndicatorPoint == displayPoint {
+                        self.focusIndicatorPoint = nil
+                    }
+                }
+            } catch {
+                self.publishError("Не удалось сфокусироваться: \(error.localizedDescription)")
+            }
+        }
+    }
+
     func setFocus(_ position: Double) {
         sessionQueue.async {
             guard let camera = self.cameraDevice,
@@ -392,6 +499,7 @@ final class CameraManager: NSObject, ObservableObject {
                     camera.whiteBalanceMode = .continuousAutoWhiteBalance
                 }
 
+                camera.setExposureTargetBias(0, completionHandler: nil)
                 camera.unlockForConfiguration()
 
                 self.currentISO = Double(camera.iso)
@@ -403,6 +511,8 @@ final class CameraManager: NSObject, ObservableObject {
                     self.isExposureManual = false
                     self.isFocusManual = false
                     self.isWhiteBalanceManual = false
+                    self.currentExposureBias = 0
+                    self.exposureBias = 0
                     self.statusMessage = "Автоматические настройки включены"
                 }
             } catch {
@@ -413,20 +523,23 @@ final class CameraManager: NSObject, ObservableObject {
 
     func takePhoto() {
         let useMultiFrame = multiFrameEnabled
+        let requestProRAW = useProRAW && proRAWAvailable
 
         sessionQueue.async {
             guard self.session.isRunning, !self.isBurstRunning else { return }
 
             self.isBurstRunning = true
             self.pendingBurstFrames.removeAll(keepingCapacity: true)
-            self.requestedBurstCount = useMultiFrame ? 3 : 1
+            self.pendingRawPhotoData = nil
+            self.burstUsesProRAW = requestProRAW
+            self.requestedBurstCount = requestProRAW ? 1 : (useMultiFrame ? 3 : 1)
             let captureCount = self.requestedBurstCount
 
             DispatchQueue.main.async {
                 self.isCapturing = true
-                self.statusMessage = captureCount == 3
-                    ? "Снимаю серию из 3 кадров…"
-                    : "Снимаю…"
+                self.statusMessage = requestProRAW
+                    ? "Снимаю Apple ProRAW…"
+                    : (captureCount == 3 ? "Снимаю серию из 3 кадров…" : "Снимаю…")
                 self.errorMessage = nil
             }
 
@@ -440,24 +553,45 @@ final class CameraManager: NSObject, ObservableObject {
         if pendingBurstFrames.count >= requestedBurstCount {
             isBurstRunning = false
             let frames = pendingBurstFrames
+            let rawData = pendingRawPhotoData
             pendingBurstFrames.removeAll(keepingCapacity: true)
-            processCapturedFrames(frames)
+            pendingRawPhotoData = nil
+            processCapturedFrames(frames, rawData: rawData)
             return
         }
 
-        let settings = AVCapturePhotoSettings()
+        let settings: AVCapturePhotoSettings
+        if burstUsesProRAW,
+           photoOutput.isAppleProRAWEnabled,
+           let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first(where: {
+               AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
+           }) {
+            let codec: AVVideoCodecType = photoOutput.availablePhotoCodecTypes.contains(.hevc)
+                ? .hevc
+                : .jpeg
+            settings = AVCapturePhotoSettings(
+                rawPixelFormatType: rawFormat,
+                processedFormat: [AVVideoCodecKey: codec]
+            )
+        } else {
+            settings = AVCapturePhotoSettings()
+        }
+
         settings.photoQualityPrioritization = .quality
         settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
 
         let identifier = settings.uniqueID
-        let delegate = PhotoFrameCaptureDelegate { [weak self] finishedID, data, error in
+        let delegate = PhotoFrameCaptureDelegate { [weak self] finishedID, processedData, rawData, error in
             guard let self else { return }
 
             self.sessionQueue.async {
                 self.captureDelegates.removeValue(forKey: finishedID)
 
-                if let data, error == nil {
+                if let data = processedData, error == nil {
                     self.pendingBurstFrames.append(data)
+                    if self.pendingRawPhotoData == nil {
+                        self.pendingRawPhotoData = rawData
+                    }
                     self.captureNextBurstFrame()
                     return
                 }
@@ -481,7 +615,7 @@ final class CameraManager: NSObject, ObservableObject {
         photoOutput.capturePhoto(with: settings, delegate: delegate)
     }
 
-    private func processCapturedFrames(_ frames: [Data]) {
+    private func processCapturedFrames(_ frames: [Data], rawData: Data?) {
         guard !frames.isEmpty else {
             DispatchQueue.main.async {
                 self.isCapturing = false
@@ -533,9 +667,14 @@ final class CameraManager: NSObject, ObservableObject {
                     saveMessage = "Фото сохранено в приложении «Фото»."
                 }
 
+                let finalMessage = rawData == nil
+                    ? saveMessage
+                    : saveMessage + " RAW-файл сохранён отдельно."
+
                 self.savePhotoToLibrary(
                     result.outputData,
-                    successMessage: saveMessage
+                    rawData: rawData,
+                    successMessage: finalMessage
                 )
             }
         }
@@ -543,6 +682,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func savePhotoToLibrary(
         _ data: Data,
+        rawData: Data?,
         successMessage: String
     ) {
         DispatchQueue.main.async {
@@ -552,12 +692,12 @@ final class CameraManager: NSObject, ObservableObject {
 
         switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized:
-            performPhotoSave(data, successMessage: successMessage)
+            performPhotoSave(data, rawData: rawData, successMessage: successMessage)
         case .notDetermined:
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
                 guard let self else { return }
                 if status == .authorized {
-                    self.performPhotoSave(data, successMessage: successMessage)
+                    self.performPhotoSave(data, rawData: rawData, successMessage: successMessage)
                 } else {
                     self.finishPhotoSave(
                         success: false,
@@ -575,11 +715,19 @@ final class CameraManager: NSObject, ObservableObject {
 
     private func performPhotoSave(
         _ data: Data,
+        rawData: Data?,
         successMessage: String
     ) {
         PHPhotoLibrary.shared().performChanges({
-            let request = PHAssetCreationRequest.forAsset()
-            request.addResource(with: .photo, data: data, options: nil)
+            let processedRequest = PHAssetCreationRequest.forAsset()
+            processedRequest.addResource(with: .photo, data: data, options: nil)
+
+            if let rawData {
+                let rawRequest = PHAssetCreationRequest.forAsset()
+                let rawOptions = PHAssetResourceCreationOptions()
+                rawOptions.uniformTypeIdentifier = "com.adobe.raw-image"
+                rawRequest.addResource(with: .photo, data: rawData, options: rawOptions)
+            }
         }) { [weak self] success, error in
             if success {
                 self?.finishPhotoSave(success: true, message: successMessage)
@@ -608,11 +756,12 @@ final class CameraManager: NSObject, ObservableObject {
 }
 
 private final class PhotoFrameCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
-    private let completion: (Int64, Data?, Error?) -> Void
-    private var photoData: Data?
+    private let completion: (Int64, Data?, Data?, Error?) -> Void
+    private var processedPhotoData: Data?
+    private var rawPhotoData: Data?
     private var processingError: Error?
 
-    init(completion: @escaping (Int64, Data?, Error?) -> Void) {
+    init(completion: @escaping (Int64, Data?, Data?, Error?) -> Void) {
         self.completion = completion
     }
 
@@ -621,9 +770,12 @@ private final class PhotoFrameCaptureDelegate: NSObject, AVCapturePhotoCaptureDe
         didFinishProcessingPhoto photo: AVCapturePhoto,
         error: Error?
     ) {
-        processingError = error
-        if error == nil {
-            photoData = photo.fileDataRepresentation()
+        if let error {
+            processingError = error
+        } else if photo.isRawPhoto {
+            rawPhotoData = photo.fileDataRepresentation()
+        } else {
+            processedPhotoData = photo.fileDataRepresentation()
         }
     }
 
@@ -634,7 +786,8 @@ private final class PhotoFrameCaptureDelegate: NSObject, AVCapturePhotoCaptureDe
     ) {
         completion(
             resolvedSettings.uniqueID,
-            photoData,
+            processedPhotoData,
+            rawPhotoData,
             processingError ?? error
         )
     }
