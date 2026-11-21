@@ -567,9 +567,8 @@ final class CameraManager: NSObject, ObservableObject {
            let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first(where: {
                AVCapturePhotoOutput.isAppleProRAWPixelFormat($0)
            }) {
-            let codec: AVVideoCodecType = photoOutput.availablePhotoCodecTypes.contains(.hevc)
-                ? .hevc
-                : .jpeg
+            // Use JPEG for the rendered companion so its PhotoKit UTI is exact.
+            let codec: AVVideoCodecType = .jpeg
             settings = AVCapturePhotoSettings(
                 rawPixelFormatType: rawFormat,
                 processedFormat: [AVVideoCodecKey: codec]
