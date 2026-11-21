@@ -9,17 +9,49 @@ struct PhotoProcessingResult {
     let enhancedImage: UIImage
     let outputData: Data
     let mergedFrameCount: Int
+    let outputScale: CGFloat
+    let usedSuperResolution: Bool
+    let processingDescription: String
 }
 
 enum PhotoProcessor {
+    private static let maximumOutputPixels: CGFloat = 48_000_000
+    private static let maximumSuperResolutionScale: CGFloat = 2.0
+
     private static let context = CIContext(options: [
         .cacheIntermediates: false
     ])
 
-    static func process(_ frameData: [Data]) throws -> PhotoProcessingResult {
+    // A per-channel median rejects a single inconsistent frame (for example,
+    // a moving object or a transient alignment error) instead of averaging it
+    // into a visible ghost. The ordinary blend remains the fallback.
+    private static let medianKernel = CIColorKernel(source: """
+    kernel vec4 median3(sampler first, sampler second, sampler third) {
+        vec4 a = sample(first, samplerCoord(first));
+        vec4 b = sample(second, samplerCoord(second));
+        vec4 c = sample(third, samplerCoord(third));
+
+        vec4 lowValue = min(a, b);
+        vec4 highValue = max(a, b);
+        vec4 middleValue = max(lowValue, min(highValue, c));
+
+        return vec4(middleValue.rgb, 1.0);
+    }
+    """)
+
+    private struct AlignedFrame {
+        let image: CIImage
+        let translation: CGPoint
+        let confidence: Float
+    }
+
+    static func process(
+        _ frameData: [Data],
+        enableSuperResolution: Bool = true
+    ) throws -> PhotoProcessingResult {
         guard let firstData = frameData.first,
               let originalImage = UIImage(data: firstData),
-              let reference = CIImage(
+              let firstCIImage = CIImage(
                 data: firstData,
                 options: [.applyOrientationProperty: true]
               ) else {
@@ -31,45 +63,116 @@ enum PhotoProcessor {
                 originalImage: originalImage,
                 enhancedImage: originalImage,
                 outputData: firstData,
-                mergedFrameCount: 1
+                mergedFrameCount: 1,
+                outputScale: 1,
+                usedSuperResolution: false,
+                processingDescription: "Одиночный кадр без объединения"
             )
         }
 
-        var alignedImages: [CIImage] = [reference]
+        let reference = normalized(firstCIImage)
+        var alignedFrames: [AlignedFrame] = [
+            AlignedFrame(
+                image: reference,
+                translation: .zero,
+                confidence: 1
+            )
+        ]
 
         for data in frameData.dropFirst() {
-            guard let floating = CIImage(
+            guard let floatingImage = CIImage(
                 data: data,
                 options: [.applyOrientationProperty: true]
             ) else {
                 continue
             }
 
-            guard let transform = alignmentTransform(
-                reference: reference,
-                floating: floating
-            ) else {
+            let floating = normalized(floatingImage)
+
+            guard abs(reference.extent.width - floating.extent.width) < 2,
+                  abs(reference.extent.height - floating.extent.height) < 2,
+                  let alignment = alignment(
+                    reference: reference,
+                    floating: floating
+                  ) else {
                 continue
             }
 
-            alignedImages.append(floating.transformed(by: transform))
+            alignedFrames.append(
+                AlignedFrame(
+                    image: floating,
+                    translation: alignment.translation,
+                    confidence: alignment.confidence
+                )
+            )
         }
 
-        guard alignedImages.count > 1 else {
+        guard alignedFrames.count > 1 else {
             return PhotoProcessingResult(
                 originalImage: originalImage,
                 enhancedImage: originalImage,
                 outputData: firstData,
-                mergedFrameCount: 1
+                mergedFrameCount: 1,
+                outputScale: 1,
+                usedSuperResolution: false,
+                processingDescription: "Кадры не удалось надёжно совместить; сохранён оригинал"
             )
         }
 
-        var commonExtent = alignedImages[0].extent
-        for image in alignedImages.dropFirst() {
+        let sourcePixels = reference.extent.width * reference.extent.height
+        let safeScale = min(
+            maximumSuperResolutionScale,
+            sqrt(maximumOutputPixels / max(sourcePixels, 1))
+        )
+
+        let hasSubpixelInformation = alignedFrames.count == 3 &&
+            containsUsefulSubpixelOffsets(alignedFrames)
+
+        let outputScale: CGFloat
+        if enableSuperResolution && hasSubpixelInformation && safeScale >= 1.15 {
+            outputScale = safeScale
+        } else {
+            outputScale = 1
+        }
+
+        var transformedImages: [CIImage] = []
+        transformedImages.reserveCapacity(alignedFrames.count)
+
+        for frame in alignedFrames {
+            let image: CIImage
+
+            if outputScale > 1 {
+                guard let upscaled = lanczosUpscale(frame.image, scale: outputScale) else {
+                    throw ProcessingError.upscaleFailed
+                }
+                image = upscaled.transformed(
+                    by: CGAffineTransform(
+                        translationX: frame.translation.x * outputScale,
+                        y: frame.translation.y * outputScale
+                    )
+                )
+            } else {
+                image = frame.image.transformed(
+                    by: CGAffineTransform(
+                        translationX: frame.translation.x,
+                        y: frame.translation.y
+                    )
+                )
+            }
+
+            transformedImages.append(image)
+        }
+
+        guard var commonExtent = transformedImages.first?.extent else {
+            throw ProcessingError.mergeFailed
+        }
+
+        for image in transformedImages.dropFirst() {
             commonExtent = commonExtent.intersection(image.extent)
         }
 
         commonExtent = commonExtent.integral
+
         guard !commonExtent.isNull,
               !commonExtent.isEmpty,
               commonExtent.width >= 64,
@@ -78,49 +181,47 @@ enum PhotoProcessor {
                 originalImage: originalImage,
                 enhancedImage: originalImage,
                 outputData: firstData,
-                mergedFrameCount: 1
+                mergedFrameCount: 1,
+                outputScale: 1,
+                usedSuperResolution: false,
+                processingDescription: "Слишком малая общая область; сохранён оригинал"
             )
         }
 
-        let weight = 1.0 / Float(alignedImages.count)
-        var composite: CIImage?
+        let croppedImages = transformedImages.map { $0.cropped(to: commonExtent) }
+        let mergedImage: CIImage
 
-        for image in alignedImages {
-            guard let weighted = weightedImage(
-                image.cropped(to: commonExtent),
-                weight: weight
-            ) else {
-                continue
+        if croppedImages.count == 3,
+           let median = medianKernel?.apply(
+            extent: commonExtent,
+            arguments: croppedImages
+           ) {
+            mergedImage = median
+        } else {
+            guard let average = average(croppedImages, extent: commonExtent) else {
+                throw ProcessingError.mergeFailed
             }
-
-            if let current = composite {
-                let addition = CIFilter(name: "CIAdditionCompositing")
-                addition?.setValue(weighted, forKey: kCIInputImageKey)
-                addition?.setValue(current, forKey: kCIInputBackgroundImageKey)
-                composite = addition?.outputImage
-            } else {
-                composite = weighted
-            }
-        }
-
-        guard let averaged = composite?.cropped(to: commonExtent) else {
-            throw ProcessingError.mergeFailed
+            mergedImage = average
         }
 
         let noiseReduction = CIFilter(name: "CINoiseReduction")
-        noiseReduction?.setValue(averaged, forKey: kCIInputImageKey)
-        noiseReduction?.setValue(0.012, forKey: "inputNoiseLevel")
-        noiseReduction?.setValue(0.4, forKey: "inputSharpness")
+        noiseReduction?.setValue(mergedImage, forKey: kCIInputImageKey)
+        noiseReduction?.setValue(
+            outputScale > 1 ? 0.008 : 0.012,
+            forKey: "inputNoiseLevel"
+        )
+        noiseReduction?.setValue(0.55, forKey: "inputSharpness")
 
-        let denoisedImage = noiseReduction?.outputImage ?? averaged
+        let denoised = noiseReduction?.outputImage ?? mergedImage
 
         let sharpen = CIFilter(name: "CISharpenLuminance")
-        sharpen?.setValue(denoisedImage, forKey: kCIInputImageKey)
-        sharpen?.setValue(0.8, forKey: "inputRadius")
-        sharpen?.setValue(0.25, forKey: "inputSharpness")
+        sharpen?.setValue(denoised, forKey: kCIInputImageKey)
+        sharpen?.setValue(outputScale > 1 ? 0.55 : 0.8, forKey: "inputRadius")
+        sharpen?.setValue(0.2, forKey: "inputSharpness")
 
-        let finalImage = sharpen?.outputImage ?? denoisedImage
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let finalImage = (sharpen?.outputImage ?? denoised).cropped(to: commonExtent)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+            ?? CGColorSpaceCreateDeviceRGB()
 
         guard let outputCGImage = context.createCGImage(
             finalImage,
@@ -137,36 +238,57 @@ enum PhotoProcessor {
             orientation: .up
         )
 
-        let sourceMetadata: [CFString: Any]
-        if let source = CGImageSourceCreateWithData(firstData as CFData, nil),
-           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
-                as? [CFString: Any] {
-            sourceMetadata = properties
-        } else {
-            sourceMetadata = [:]
-        }
-
+        let sourceMetadata = metadata(from: firstData)
         let outputData = try jpegData(
             from: outputCGImage,
             quality: 0.97,
             preserving: sourceMetadata
         )
 
+        let usedSuperResolution = outputScale > 1
+        let processingDescription: String
+
+        if usedSuperResolution {
+            processingDescription = String(
+                format: "Объединено %d кадра · реконструкция %.2f× · медианное подавление выбросов",
+                alignedFrames.count,
+                outputScale
+            )
+        } else if alignedFrames.count == 3 {
+            processingDescription = "Объединено 3 кадра · подавлены шум и одиночные артефакты"
+        } else {
+            processingDescription = String(
+                format: "Объединено %d кадра · подавление шума",
+                alignedFrames.count
+            )
+        }
+
         return PhotoProcessingResult(
             originalImage: originalImage,
             enhancedImage: enhancedImage,
             outputData: outputData,
-            mergedFrameCount: alignedImages.count
+            mergedFrameCount: alignedFrames.count,
+            outputScale: outputScale,
+            usedSuperResolution: usedSuperResolution,
+            processingDescription: processingDescription
         )
     }
 
-    private static func alignmentTransform(
+    private static func normalized(_ image: CIImage) -> CIImage {
+        let extent = image.extent
+        return image.transformed(
+            by: CGAffineTransform(
+                translationX: -extent.minX,
+                y: -extent.minY
+            )
+        )
+    }
+
+    private static func alignment(
         reference: CIImage,
         floating: CIImage
-    ) -> CGAffineTransform? {
-        guard abs(reference.extent.width - floating.extent.width) < 2,
-              abs(reference.extent.height - floating.extent.height) < 2,
-              let referenceThumbnail = thumbnail(for: reference),
+    ) -> (translation: CGPoint, confidence: Float)? {
+        guard let referenceThumbnail = thumbnail(for: reference),
               let floatingThumbnail = thumbnail(for: floating) else {
             return nil
         }
@@ -185,7 +307,7 @@ enum PhotoProcessor {
 
             guard let observation = request.results?.first
                     as? VNImageTranslationAlignmentObservation,
-                  observation.confidence >= 0.15 else {
+                  observation.confidence >= 0.2 else {
                 return nil
             }
 
@@ -198,22 +320,36 @@ enum PhotoProcessor {
 
             guard translationX.isFinite,
                   translationY.isFinite,
-                  abs(translationX) < reference.extent.width * 0.08,
-                  abs(translationY) < reference.extent.height * 0.08 else {
+                  abs(translationX) < reference.extent.width * 0.05,
+                  abs(translationY) < reference.extent.height * 0.05 else {
                 return nil
             }
 
-            return CGAffineTransform(
-                a: transform.a,
-                b: transform.b,
-                c: transform.c,
-                d: transform.d,
-                tx: translationX,
-                ty: translationY
+            return (
+                CGPoint(x: translationX, y: translationY),
+                observation.confidence
             )
         } catch {
             return nil
         }
+    }
+
+    private static func containsUsefulSubpixelOffsets(
+        _ frames: [AlignedFrame]
+    ) -> Bool {
+        for frame in frames.dropFirst() {
+            let xFraction = abs(frame.translation.x - frame.translation.x.rounded())
+            let yFraction = abs(frame.translation.y - frame.translation.y.rounded())
+
+            let xDistanceToInteger = min(xFraction, 1 - xFraction)
+            let yDistanceToInteger = min(yFraction, 1 - yFraction)
+
+            if max(xDistanceToInteger, yDistanceToInteger) >= 0.18 {
+                return true
+            }
+        }
+
+        return false
     }
 
     private static func thumbnail(for image: CIImage) -> CGImage? {
@@ -227,12 +363,64 @@ enum PhotoProcessor {
         let resized = image.transformed(
             by: CGAffineTransform(scaleX: scale, y: scale)
         )
-        return context.createCGImage(resized, from: resized.extent.integral)
+
+        return context.createCGImage(
+            resized,
+            from: resized.extent.integral
+        )
+    }
+
+    private static func lanczosUpscale(
+        _ image: CIImage,
+        scale: CGFloat
+    ) -> CIImage? {
+        guard let filter = CIFilter(name: "CILanczosScaleTransform") else {
+            return nil
+        }
+
+        filter.setValue(image, forKey: kCIInputImageKey)
+        filter.setValue(Float(scale), forKey: "inputScale")
+        filter.setValue(1.0, forKey: "inputAspectRatio")
+
+        return filter.outputImage
+    }
+
+    private static func average(
+        _ images: [CIImage],
+        extent: CGRect
+    ) -> CIImage? {
+        guard !images.isEmpty else { return nil }
+
+        let weight = 1.0 / CGFloat(images.count)
+        var composite: CIImage?
+
+        for image in images {
+            guard let weighted = weightedImage(image, weight: weight) else {
+                return nil
+            }
+
+            if let current = composite {
+                guard let addition = CIFilter(name: "CIAdditionCompositing") else {
+                    return nil
+                }
+                addition.setValue(weighted, forKey: kCIInputImageKey)
+                addition.setValue(current, forKey: kCIInputBackgroundImageKey)
+
+                guard let output = addition.outputImage else {
+                    return nil
+                }
+                composite = output
+            } else {
+                composite = weighted
+            }
+        }
+
+        return composite?.cropped(to: extent)
     }
 
     private static func weightedImage(
         _ image: CIImage,
-        weight: Float
+        weight: CGFloat
     ) -> CIImage? {
         guard let matrix = CIFilter(name: "CIColorMatrix") else {
             return nil
@@ -240,15 +428,15 @@ enum PhotoProcessor {
 
         matrix.setValue(image, forKey: kCIInputImageKey)
         matrix.setValue(
-            CIVector(x: CGFloat(weight), y: 0, z: 0, w: 0),
+            CIVector(x: weight, y: 0, z: 0, w: 0),
             forKey: "inputRVector"
         )
         matrix.setValue(
-            CIVector(x: 0, y: CGFloat(weight), z: 0, w: 0),
+            CIVector(x: 0, y: weight, z: 0, w: 0),
             forKey: "inputGVector"
         )
         matrix.setValue(
-            CIVector(x: 0, y: 0, z: CGFloat(weight), w: 0),
+            CIVector(x: 0, y: 0, z: weight, w: 0),
             forKey: "inputBVector"
         )
         matrix.setValue(
@@ -257,6 +445,16 @@ enum PhotoProcessor {
         )
 
         return matrix.outputImage
+    }
+
+    private static func metadata(from data: Data) -> [CFString: Any] {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any] else {
+            return [:]
+        }
+
+        return properties
     }
 
     private static func jpegData(
@@ -304,6 +502,7 @@ enum PhotoProcessor {
     private enum ProcessingError: Error {
         case invalidImage
         case mergeFailed
+        case upscaleFailed
         case renderFailed
         case encodingFailed
     }
