@@ -64,7 +64,7 @@ enum PhotoProcessor {
                 outputData: firstData,
                 mergedFrameCount: 1,
                 outputScale: 1,
-                usedSuperResolution: false,
+                usedHighResolutionUpscale: false,
                 processingDescription: "Одиночный кадр без объединения"
             )
         }
@@ -111,14 +111,14 @@ enum PhotoProcessor {
                 outputData: firstData,
                 mergedFrameCount: 1,
                 outputScale: 1,
-                usedSuperResolution: false,
+                usedHighResolutionUpscale: false,
                 processingDescription: "Кадры не удалось надёжно совместить; сохранён оригинал"
             )
         }
 
         let sourcePixels = reference.extent.width * reference.extent.height
         let safeScale = min(
-            maximumSuperResolutionScale,
+            maximumUpscaleScale,
             sqrt(maximumOutputPixels / max(sourcePixels, 1))
         )
 
@@ -126,7 +126,7 @@ enum PhotoProcessor {
             containsUsefulSubpixelOffsets(alignedFrames)
 
         let outputScale: CGFloat
-        if enableSuperResolution && hasSubpixelInformation && safeScale >= 1.15 {
+        if enableHighResolutionUpscale && hasSubpixelInformation && safeScale >= 1.15 {
             outputScale = safeScale
         } else {
             outputScale = 1
@@ -191,7 +191,7 @@ enum PhotoProcessor {
                 outputData: firstData,
                 mergedFrameCount: 1,
                 outputScale: 1,
-                usedSuperResolution: false,
+                usedHighResolutionUpscale: false,
                 processingDescription: "Слишком малая общая область; сохранён оригинал"
             )
         }
@@ -253,10 +253,10 @@ enum PhotoProcessor {
             preserving: sourceMetadata
         )
 
-        let usedSuperResolution = outputScale > 1
+        let usedHighResolutionUpscale = outputScale > 1
         let processingDescription: String
 
-        if usedSuperResolution {
+        if usedHighResolutionUpscale {
             processingDescription = String(
                 format: "Объединено %d кадра · Lanczos-увеличение %.2f× · медианное подавление выбросов",
                 alignedFrames.count,
@@ -277,7 +277,7 @@ enum PhotoProcessor {
             outputData: outputData,
             mergedFrameCount: alignedFrames.count,
             outputScale: outputScale,
-            usedSuperResolution: usedSuperResolution,
+            usedHighResolutionUpscale: usedHighResolutionUpscale,
             processingDescription: processingDescription
         )
     }
