@@ -335,6 +335,14 @@ struct ContentView: View {
                 .scaledToFit()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if !camera.processingDescription.isEmpty {
+                Text(camera.processingDescription)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             if camera.originalCapturedImage != nil {
                 HStack(spacing: 12) {
                     Button {
