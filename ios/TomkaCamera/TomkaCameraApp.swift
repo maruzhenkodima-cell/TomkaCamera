@@ -161,6 +161,7 @@ struct ContentView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
+                            .disabled(camera.useProRAW)
                         }
                         .font(.caption)
                         .padding(.horizontal, 24)
