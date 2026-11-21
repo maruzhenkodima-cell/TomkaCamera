@@ -39,6 +39,7 @@ final class CameraManager: NSObject, ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
 
     private var cameraDevice: AVCaptureDevice?
+    private var burstPhotoDimensions: CMVideoDimensions?
     private var isConfigured = false
     private var captureDelegates: [Int64: PhotoFrameCaptureDelegate] = [:]
     private var pendingBurstFrames: [Data] = []
@@ -74,7 +75,8 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var mergedFrameCount = 1
     @Published var processingDescription = ""
 
-    @Published var multiFrameEnabled = true
+    // Single-shot capture is the safest default for the first public beta.
+    @Published var multiFrameEnabled = false
     @Published var flashMode: CameraFlashMode = .off
     @Published var availableFlashModes: [CameraFlashMode] = [.off]
     @Published var hasFlash = false
@@ -253,12 +255,27 @@ final class CameraManager: NSObject, ObservableObject {
                 }
                 self.session.addOutput(self.photoOutput)
 
-                // Use the largest still-photo size exposed by the active camera format.
-                if let dimensions = camera.activeFormat.supportedMaxPhotoDimensions.max(by: {
-                    Int64($0.width) * Int64($0.height) <
-                    Int64($1.width) * Int64($1.height)
-                }) {
-                    self.photoOutput.maxPhotoDimensions = dimensions
+                // Use the largest supported size for single shots and ProRAW.
+                // Three full-resolution frames can use a lot of memory, so burst capture
+                // uses the largest supported size up to 16 MP (or the smallest available size).
+                let supportedDimensions = camera.activeFormat.supportedMaxPhotoDimensions
+                let pixelCount: (CMVideoDimensions) -> Int64 = {
+                    Int64($0.width) * Int64($0.height)
+                }
+                let maximumDimensions = supportedDimensions.max {
+                    pixelCount($0) < pixelCount($1)
+                }
+                let burstCandidates = supportedDimensions.filter {
+                    pixelCount($0) <= 16_000_000
+                }
+                self.burstPhotoDimensions = burstCandidates.max {
+                    pixelCount($0) < pixelCount($1)
+                } ?? supportedDimensions.min {
+                    pixelCount($0) < pixelCount($1)
+                }
+
+                if let maximumDimensions {
+                    self.photoOutput.maxPhotoDimensions = maximumDimensions
                 }
 
                 self.photoOutput.maxPhotoQualityPrioritization = .quality
@@ -771,7 +788,7 @@ final class CameraManager: NSObject, ObservableObject {
             group.notify(queue: sessionQueue, execute: completion)
         } catch {
             savedBurstModes = nil
-            publishError("Не удалось зафиксировать настройки для серии: \\(error.localizedDescription)")
+            publishError("Не удалось зафиксировать настройки для серии: \(error.localizedDescription)")
             completion()
         }
     }
@@ -800,7 +817,7 @@ final class CameraManager: NSObject, ObservableObject {
 
             camera.unlockForConfiguration()
         } catch {
-            publishError("Не удалось вернуть автоматические настройки: \\(error.localizedDescription)")
+            publishError("Не удалось вернуть автоматические настройки: \(error.localizedDescription)")
         }
     }
 
@@ -835,7 +852,9 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         settings.photoQualityPrioritization = .quality
-        settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+        settings.maxPhotoDimensions = requestedBurstCount > 1
+            ? (burstPhotoDimensions ?? photoOutput.maxPhotoDimensions)
+            : photoOutput.maxPhotoDimensions
         if photoOutput.supportedFlashModes.contains(burstFlashMode) {
             settings.flashMode = burstFlashMode
         }
