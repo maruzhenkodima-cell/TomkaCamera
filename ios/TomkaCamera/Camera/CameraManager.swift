@@ -3,13 +3,22 @@ import Combine
 import Photos
 import UIKit
 
-final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate {
+final class CameraManager: NSObject, ObservableObject {
     let session = AVCaptureSession()
 
     private let sessionQueue = DispatchQueue(label: "tomka.camera.session")
+    private let processingQueue = DispatchQueue(
+        label: "tomka.camera.processing",
+        qos: .userInitiated
+    )
     private let photoOutput = AVCapturePhotoOutput()
+
     private var cameraDevice: AVCaptureDevice?
     private var isConfigured = false
+    private var captureDelegates: [Int64: PhotoFrameCaptureDelegate] = [:]
+    private var pendingBurstFrames: [Data] = []
+    private var requestedBurstCount = 1
+    private var isBurstRunning = false
 
     // These values are read and written only on sessionQueue.
     private var currentISO: Double = 100
@@ -21,9 +30,12 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
     @Published var errorMessage: String?
     @Published var statusMessage: String?
     @Published var capturedImage: UIImage?
+    @Published var originalCapturedImage: UIImage?
     @Published var isCapturing = false
     @Published var isSavingPhoto = false
+    @Published var mergedFrameCount = 1
 
+    @Published var multiFrameEnabled = true
     @Published var zoomFactor: CGFloat = 1.0
     @Published var maxZoomFactor: CGFloat = 10.0
 
@@ -35,6 +47,10 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
     @Published var maxShutterSeconds: Double = 1.0 / 4.0
     @Published var focusPosition: Double = 0.5
     @Published var colorTemperature: Double = 5000
+
+    @Published var isExposureManual = false
+    @Published var isFocusManual = false
+    @Published var isWhiteBalanceManual = false
 
     var shutterSpeedLabel: String {
         let minimum = max(minShutterSeconds, 0.00001)
@@ -111,7 +127,7 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                 }
                 self.session.addOutput(self.photoOutput)
 
-                // Request the largest still-photo dimensions supported by this active format.
+                // Use the largest still-photo size exposed by the active camera format.
                 if let dimensions = camera.activeFormat.supportedMaxPhotoDimensions.max(by: {
                     Int64($0.width) * Int64($0.height) <
                     Int64($1.width) * Int64($1.height)
@@ -142,13 +158,14 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                     minimumShutter,
                     min(maximumShutter, camera.exposureDuration.seconds)
                 )
-                let shutterPosition: Double
+                let initialShutterPosition: Double
                 if maximumShutter > minimumShutter {
-                    shutterPosition = log(currentDuration / minimumShutter) /
+                    initialShutterPosition = log(currentDuration / minimumShutter) /
                         log(maximumShutter / minimumShutter)
                 } else {
-                    shutterPosition = 0.5
+                    initialShutterPosition = 0.5
                 }
+                self.currentShutterPosition = initialShutterPosition
 
                 let temperatureAndTint = camera.temperatureAndTintValues(
                     for: camera.deviceWhiteBalanceGains
@@ -162,7 +179,7 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                     self.isoValue = self.currentISO
                     self.minShutterSeconds = minimumShutter
                     self.maxShutterSeconds = maximumShutter
-                    self.shutterPosition = min(1.0, max(0.0, shutterPosition))
+                    self.shutterPosition = min(1.0, max(0.0, initialShutterPosition))
                     self.focusPosition = self.currentFocusPosition
                     self.colorTemperature = self.currentTemperature
                 }
@@ -218,6 +235,7 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
             self.currentISO = newISO
             DispatchQueue.main.async {
                 self.isoValue = newISO
+                self.isExposureManual = true
             }
         }
     }
@@ -240,6 +258,7 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
             self.currentShutterPosition = clampedPosition
             DispatchQueue.main.async {
                 self.shutterPosition = clampedPosition
+                self.isExposureManual = true
             }
         }
     }
@@ -307,6 +326,7 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                 self.currentFocusPosition = value
                 DispatchQueue.main.async {
                     self.focusPosition = value
+                    self.isFocusManual = true
                 }
             } catch {
                 self.publishError("Не удалось настроить фокус: \(error.localizedDescription)")
@@ -347,6 +367,7 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                 self.currentTemperature = value
                 DispatchQueue.main.async {
                     self.colorTemperature = value
+                    self.isWhiteBalanceManual = true
                 }
             } catch {
                 self.publishError("Не удалось настроить баланс белого: \(error.localizedDescription)")
@@ -379,6 +400,9 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                 DispatchQueue.main.async {
                     self.isoValue = self.currentISO
                     self.focusPosition = self.currentFocusPosition
+                    self.isExposureManual = false
+                    self.isFocusManual = false
+                    self.isWhiteBalanceManual = false
                     self.statusMessage = "Автоматические настройки включены"
                 }
             } catch {
@@ -389,55 +413,135 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
 
     func takePhoto() {
         sessionQueue.async {
-            guard self.session.isRunning else { return }
+            guard self.session.isRunning, !self.isBurstRunning else { return }
 
-            let settings = AVCapturePhotoSettings()
-            settings.photoQualityPrioritization = .quality
-            settings.maxPhotoDimensions = self.photoOutput.maxPhotoDimensions
+            self.isBurstRunning = true
+            self.pendingBurstFrames.removeAll(keepingCapacity: true)
+            self.requestedBurstCount = self.multiFrameEnabled ? 3 : 1
 
             DispatchQueue.main.async {
                 self.isCapturing = true
-                self.statusMessage = nil
+                self.statusMessage = self.requestedBurstCount == 3
+                    ? "Снимаю серию из 3 кадров…"
+                    : "Снимаю…"
                 self.errorMessage = nil
             }
 
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
+            self.captureNextBurstFrame()
         }
     }
 
-    func photoOutput(
-        _ output: AVCapturePhotoOutput,
-        didFinishProcessingPhoto photo: AVCapturePhoto,
-        error: Error?
-    ) {
-        if let error {
-            DispatchQueue.main.async {
-                self.isCapturing = false
-                self.errorMessage = error.localizedDescription
-            }
+    private func captureNextBurstFrame() {
+        guard isBurstRunning else { return }
+
+        if pendingBurstFrames.count >= requestedBurstCount {
+            isBurstRunning = false
+            let frames = pendingBurstFrames
+            pendingBurstFrames.removeAll(keepingCapacity: true)
+            processCapturedFrames(frames)
             return
         }
 
-        guard
-            let data = photo.fileDataRepresentation(),
-            let image = UIImage(data: data)
-        else {
+        let settings = AVCapturePhotoSettings()
+        settings.photoQualityPrioritization = .quality
+        settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+
+        let identifier = settings.uniqueID
+        let delegate = PhotoFrameCaptureDelegate { [weak self] finishedID, data, error in
+            guard let self else { return }
+
+            self.sessionQueue.async {
+                self.captureDelegates.removeValue(forKey: finishedID)
+
+                if let data, error == nil {
+                    self.pendingBurstFrames.append(data)
+                    self.captureNextBurstFrame()
+                    return
+                }
+
+                if !self.pendingBurstFrames.isEmpty {
+                    // Keep usable frames if one capture in the series fails.
+                    self.requestedBurstCount = self.pendingBurstFrames.count
+                    self.captureNextBurstFrame()
+                } else {
+                    self.isBurstRunning = false
+                    DispatchQueue.main.async {
+                        self.isCapturing = false
+                        self.errorMessage = error?.localizedDescription
+                            ?? "Не удалось получить фотографию."
+                    }
+                }
+            }
+        }
+
+        captureDelegates[identifier] = delegate
+        photoOutput.capturePhoto(with: settings, delegate: delegate)
+    }
+
+    private func processCapturedFrames(_ frames: [Data]) {
+        guard !frames.isEmpty else {
             DispatchQueue.main.async {
                 self.isCapturing = false
-                self.errorMessage = "Не удалось обработать полученный снимок."
+                self.errorMessage = "Камера не вернула изображение."
             }
             return
         }
 
         DispatchQueue.main.async {
-            self.capturedImage = image
-            self.isCapturing = false
+            self.statusMessage = frames.count > 1
+                ? "Совмещаю кадры и уменьшаю шум…"
+                : "Подготавливаю фотографию…"
         }
 
-        savePhotoToLibrary(data)
+        processingQueue.async {
+            let result: PhotoProcessingResult
+
+            do {
+                result = try PhotoProcessor.process(frames)
+            } catch {
+                guard let data = frames.first, let image = UIImage(data: data) else {
+                    DispatchQueue.main.async {
+                        self.isCapturing = false
+                        self.errorMessage = "Не удалось обработать фотографию."
+                    }
+                    return
+                }
+
+                result = PhotoProcessingResult(
+                    originalImage: image,
+                    enhancedImage: image,
+                    outputData: data,
+                    mergedFrameCount: 1
+                )
+            }
+
+            DispatchQueue.main.async {
+                self.originalCapturedImage = result.originalImage
+                self.capturedImage = result.enhancedImage
+                self.mergedFrameCount = result.mergedFrameCount
+                self.isCapturing = false
+
+                let saveMessage: String
+                if result.mergedFrameCount > 1 {
+                    saveMessage = "Объединено кадров: \(result.mergedFrameCount). Фото сохранено."
+                } else if frames.count > 1 {
+                    saveMessage = "Кадры не удалось надёжно совместить. Сохранён оригинальный снимок."
+                } else {
+                    saveMessage = "Фото сохранено в приложении «Фото»."
+                }
+
+                self.savePhotoToLibrary(
+                    result.outputData,
+                    successMessage: saveMessage
+                )
+            }
+        }
     }
 
-    private func savePhotoToLibrary(_ data: Data) {
+    private func savePhotoToLibrary(
+        _ data: Data,
+        successMessage: String
+    ) {
         DispatchQueue.main.async {
             self.isSavingPhoto = true
             self.statusMessage = "Сохраняю снимок в Фото…"
@@ -445,12 +549,12 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
 
         switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized:
-            performPhotoSave(data)
+            performPhotoSave(data, successMessage: successMessage)
         case .notDetermined:
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
                 guard let self else { return }
                 if status == .authorized {
-                    self.performPhotoSave(data)
+                    self.performPhotoSave(data, successMessage: successMessage)
                 } else {
                     self.finishPhotoSave(
                         success: false,
@@ -466,16 +570,16 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
         }
     }
 
-    private func performPhotoSave(_ data: Data) {
+    private func performPhotoSave(
+        _ data: Data,
+        successMessage: String
+    ) {
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
             request.addResource(with: .photo, data: data, options: nil)
         }) { [weak self] success, error in
             if success {
-                self?.finishPhotoSave(
-                    success: true,
-                    message: "Снимок сохранён в приложении Фото"
-                )
+                self?.finishPhotoSave(success: true, message: successMessage)
             } else {
                 self?.finishPhotoSave(
                     success: false,
@@ -497,5 +601,38 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
         DispatchQueue.main.async {
             self.errorMessage = message
         }
+    }
+}
+
+private final class PhotoFrameCaptureDelegate: NSObject, AVCapturePhotoCaptureDelegate {
+    private let completion: (Int64, Data?, Error?) -> Void
+    private var photoData: Data?
+    private var processingError: Error?
+
+    init(completion: @escaping (Int64, Data?, Error?) -> Void) {
+        self.completion = completion
+    }
+
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishProcessingPhoto photo: AVCapturePhoto,
+        error: Error?
+    ) {
+        processingError = error
+        if error == nil {
+            photoData = photo.fileDataRepresentation()
+        }
+    }
+
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishCaptureFor resolvedSettings: AVCaptureResolvedPhotoSettings,
+        error: Error?
+    ) {
+        completion(
+            resolvedSettings.uniqueID,
+            photoData,
+            processingError ?? error
+        )
     }
 }
