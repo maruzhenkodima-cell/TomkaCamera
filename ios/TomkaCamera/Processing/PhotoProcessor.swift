@@ -1,5 +1,4 @@
 import CoreImage
-import CoreImage.CIFilterBuiltins
 import ImageIO
 import UniformTypeIdentifiers
 import Vision
@@ -108,17 +107,19 @@ enum PhotoProcessor {
             throw ProcessingError.mergeFailed
         }
 
-        let noiseReduction = CIFilter.noiseReduction()
-        noiseReduction.inputImage = averaged
-        noiseReduction.noiseLevel = 0.012
-        noiseReduction.sharpness = 0.4
+        let noiseReduction = CIFilter(name: "CINoiseReduction")
+        noiseReduction?.setValue(averaged, forKey: kCIInputImageKey)
+        noiseReduction?.setValue(0.012, forKey: "inputNoiseLevel")
+        noiseReduction?.setValue(0.4, forKey: "inputSharpness")
 
-        let sharpen = CIFilter.sharpenLuminance()
-        sharpen.inputImage = noiseReduction.outputImage ?? averaged
-        sharpen.radius = 0.8
-        sharpen.sharpness = 0.25
+        let denoisedImage = noiseReduction?.outputImage ?? averaged
 
-        let finalImage = sharpen.outputImage ?? averaged
+        let sharpen = CIFilter(name: "CISharpenLuminance")
+        sharpen?.setValue(denoisedImage, forKey: kCIInputImageKey)
+        sharpen?.setValue(0.8, forKey: "inputRadius")
+        sharpen?.setValue(0.25, forKey: "inputSharpness")
+
+        let finalImage = sharpen?.outputImage ?? denoisedImage
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
 
         guard let outputCGImage = context.createCGImage(
