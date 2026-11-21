@@ -699,10 +699,6 @@ final class CameraManager: NSObject, ObservableObject {
             self.requestedBurstCount = canUseBurst ? 3 : 1
             let captureCount = self.requestedBurstCount
 
-            if captureCount > 1 {
-                self.freezeAutomaticControlsForBurst()
-            }
-
             DispatchQueue.main.async {
                 self.isCapturing = true
                 self.statusMessage = requestProRAW
@@ -711,12 +707,23 @@ final class CameraManager: NSObject, ObservableObject {
                 self.errorMessage = nil
             }
 
-            self.captureNextBurstFrame()
+            if captureCount > 1 {
+                self.freezeAutomaticControlsForBurst {
+                    self.captureNextBurstFrame()
+                }
+            } else {
+                self.captureNextBurstFrame()
+            }
         }
     }
 
-    private func freezeAutomaticControlsForBurst() {
-        guard let camera = cameraDevice else { return }
+    private func freezeAutomaticControlsForBurst(completion: @escaping () -> Void) {
+        guard let camera = cameraDevice else {
+            completion()
+            return
+        }
+
+        let group = DispatchGroup()
 
         do {
             try camera.lockForConfiguration()
@@ -735,19 +742,23 @@ final class CameraManager: NSObject, ObservableObject {
             if camera.focusMode != .locked &&
                 camera.isFocusModeSupported(.locked) {
                 focusMode = camera.focusMode
+                group.enter()
                 camera.setFocusModeLocked(
-                    lensPosition: camera.lensPosition,
-                    completionHandler: nil
-                )
+                    lensPosition: camera.lensPosition
+                ) { _ in
+                    group.leave()
+                }
             }
 
             if camera.whiteBalanceMode != .locked &&
                 camera.isWhiteBalanceModeSupported(.locked) {
                 whiteBalanceMode = camera.whiteBalanceMode
+                group.enter()
                 camera.setWhiteBalanceModeLocked(
-                    with: camera.deviceWhiteBalanceGains,
-                    completionHandler: nil
-                )
+                    with: camera.deviceWhiteBalanceGains
+                ) { _ in
+                    group.leave()
+                }
             }
 
             camera.unlockForConfiguration()
@@ -756,9 +767,12 @@ final class CameraManager: NSObject, ObservableObject {
                 focus: focusMode,
                 whiteBalance: whiteBalanceMode
             )
+
+            group.notify(queue: sessionQueue, execute: completion)
         } catch {
             savedBurstModes = nil
             publishError("Не удалось зафиксировать настройки для серии: \\(error.localizedDescription)")
+            completion()
         }
     }
 
