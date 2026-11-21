@@ -1,0 +1,20 @@
+﻿name: TomkaCamera
+options:
+  bundleIdPrefix: com.tomkaomka
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  TomkaCamera:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios/TomkaCamera
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tomkaomka.TomkaCamera
+        PRODUCT_NAME: TomkaCamera
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1"
+        INFOPLIST_KEY_NSCameraUsageDescription: "TomkaCamera uses the camera to take photos."
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "TomkaCamera saves photos to your library."
+        GENERATE_INFOPLIST_FILE: YES
