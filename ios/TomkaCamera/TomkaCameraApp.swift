@@ -12,6 +12,7 @@ struct TomkaCameraApp: App {
 struct ContentView: View {
     @StateObject private var camera = CameraManager()
     @State private var showManualControls = false
+    @State private var showOriginal = false
 
     private let zoomPresets: [CGFloat] = [1.0, 2.0, 3.0]
 
@@ -19,28 +20,17 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let image = camera.capturedImage {
+            if let image = showOriginal
+                ? camera.originalCapturedImage
+                : camera.capturedImage {
+                photoReview(image)
+            } else if let image = camera.capturedImage {
                 photoReview(image)
             } else {
                 cameraScreen
             }
         }
         .preferredColorScheme(.dark)
-        .onChange(of: camera.zoomFactor) { newValue in
-            camera.setZoom(newValue)
-        }
-        .onChange(of: camera.isoValue) { newValue in
-            camera.setISO(newValue)
-        }
-        .onChange(of: camera.shutterPosition) { newValue in
-            camera.setShutterPosition(newValue)
-        }
-        .onChange(of: camera.focusPosition) { newValue in
-            camera.setFocus(newValue)
-        }
-        .onChange(of: camera.colorTemperature) { newValue in
-            camera.setColorTemperature(newValue)
-        }
         .onAppear {
             camera.requestPermission()
         }
@@ -124,12 +114,20 @@ struct ContentView: View {
                     }
 
                     Slider(
-                        value: $camera.zoomFactor,
+                        value: Binding(
+                            get: { camera.zoomFactor },
+                            set: { camera.setZoom($0) }
+                        ),
                         in: 1.0...max(1.0, camera.maxZoomFactor)
                     )
                     .tint(.white)
                     .disabled(!camera.isAuthorized || camera.maxZoomFactor <= 1.0)
                     .padding(.horizontal, 24)
+
+                    Toggle("Серия из 3 кадров (меньше шума)", isOn: $camera.multiFrameEnabled)
+                        .font(.caption)
+                        .tint(.white)
+                        .padding(.horizontal, 24)
 
                     Button {
                         camera.takePhoto()
@@ -147,7 +145,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .disabled(!camera.isAuthorized || camera.isCapturing)
+                    .disabled(!camera.isAuthorized || camera.isCapturing || camera.isSavingPhoto)
                     .padding(.top, 2)
                 }
                 .padding(.horizontal, 16)
@@ -185,7 +183,13 @@ struct ContentView: View {
                     Text("\(Int(camera.isoValue))")
                         .monospacedDigit()
                 }
-                Slider(value: $camera.isoValue, in: camera.minISO...camera.maxISO)
+                Slider(
+                    value: Binding(
+                        get: { camera.isoValue },
+                        set: { camera.setISO($0) }
+                    ),
+                    in: camera.minISO...camera.maxISO
+                )
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -195,7 +199,13 @@ struct ContentView: View {
                     Text(camera.shutterSpeedLabel)
                         .monospacedDigit()
                 }
-                Slider(value: $camera.shutterPosition, in: 0...1)
+                Slider(
+                    value: Binding(
+                        get: { camera.shutterPosition },
+                        set: { camera.setShutterPosition($0) }
+                    ),
+                    in: 0...1
+                )
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -205,7 +215,13 @@ struct ContentView: View {
                     Text(String(format: "%.2f", camera.focusPosition))
                         .monospacedDigit()
                 }
-                Slider(value: $camera.focusPosition, in: 0...1)
+                Slider(
+                    value: Binding(
+                        get: { camera.focusPosition },
+                        set: { camera.setFocus($0) }
+                    ),
+                    in: 0...1
+                )
             }
 
             VStack(alignment: .leading, spacing: 5) {
@@ -215,10 +231,17 @@ struct ContentView: View {
                     Text("\(Int(camera.colorTemperature)) K")
                         .monospacedDigit()
                 }
-                Slider(value: $camera.colorTemperature, in: 2500...8000, step: 50)
+                Slider(
+                    value: Binding(
+                        get: { camera.colorTemperature },
+                        set: { camera.setColorTemperature($0) }
+                    ),
+                    in: 2500...8000,
+                    step: 50
+                )
             }
 
-            Text("Ручные значения фиксируют параметры камеры. Кнопка «Авто» возвращает автоматическую экспозицию, фокус и баланс белого.")
+            Text("Перемещение ползунка включает ручной режим соответствующего параметра. «Авто» возвращает автоматику.")
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.7))
                 .fixedSize(horizontal: false, vertical: true)
@@ -235,6 +258,36 @@ struct ContentView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if camera.originalCapturedImage != nil {
+                HStack(spacing: 12) {
+                    Button {
+                        showOriginal = false
+                    } label: {
+                        Text("Обработанное")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                !showOriginal ? .white.opacity(0.22) : .clear,
+                                in: Capsule()
+                            )
+                    }
+
+                    Button {
+                        showOriginal = true
+                    } label: {
+                        Text("Оригинал")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(
+                                showOriginal ? .white.opacity(0.22) : .clear,
+                                in: Capsule()
+                            )
+                    }
+                }
+                .font(.subheadline.weight(.semibold))
+                .overlay(Capsule().stroke(.white.opacity(0.3), lineWidth: 1))
+            }
 
             if camera.isSavingPhoto {
                 Label("Сохраняю в Фото…", systemImage: "arrow.down.to.line")
@@ -253,8 +306,10 @@ struct ContentView: View {
 
             Button("Назад к камере") {
                 camera.capturedImage = nil
+                camera.originalCapturedImage = nil
                 camera.statusMessage = nil
                 camera.errorMessage = nil
+                showOriginal = false
             }
             .font(.headline)
             .foregroundStyle(.black)
