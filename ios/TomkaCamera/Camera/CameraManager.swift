@@ -412,16 +412,19 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     func takePhoto() {
+        let useMultiFrame = multiFrameEnabled
+
         sessionQueue.async {
             guard self.session.isRunning, !self.isBurstRunning else { return }
 
             self.isBurstRunning = true
             self.pendingBurstFrames.removeAll(keepingCapacity: true)
-            self.requestedBurstCount = self.multiFrameEnabled ? 3 : 1
+            self.requestedBurstCount = useMultiFrame ? 3 : 1
+            let captureCount = self.requestedBurstCount
 
             DispatchQueue.main.async {
                 self.isCapturing = true
-                self.statusMessage = self.requestedBurstCount == 3
+                self.statusMessage = captureCount == 3
                     ? "Снимаю серию из 3 кадров…"
                     : "Снимаю…"
                 self.errorMessage = nil
