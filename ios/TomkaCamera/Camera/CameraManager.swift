@@ -72,6 +72,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isCapturing = false
     @Published var isSavingPhoto = false
     @Published var mergedFrameCount = 1
+    @Published var processingDescription = ""
 
     @Published var multiFrameEnabled = true
     @Published var flashMode: CameraFlashMode = .off
@@ -894,7 +895,10 @@ final class CameraManager: NSObject, ObservableObject {
                     originalImage: image,
                     enhancedImage: image,
                     outputData: data,
-                    mergedFrameCount: 1
+                    mergedFrameCount: 1,
+                    outputScale: 1,
+                    usedHighResolutionUpscale: false,
+                    processingDescription: "Обработка не удалась; сохранён оригинал"
                 )
             }
 
@@ -902,6 +906,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.originalCapturedImage = result.originalImage
                 self.capturedImage = result.enhancedImage
                 self.mergedFrameCount = result.mergedFrameCount
+                self.processingDescription = result.processingDescription
                 self.isCapturing = false
 
                 let saveMessage: String
