@@ -42,6 +42,28 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
+      - name: Ensure version metadata in app bundle
+        run: |
+          set -euo pipefail
+          INFO_PLIST="build/Build/Products/Release-iphoneos/TomkaCamera.app/Info.plist"
+          test -f "$INFO_PLIST"
+
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.0" "$INFO_PLIST"
+          else
+            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.1.0" "$INFO_PLIST"
+          fi
+
+          if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST" >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1" "$INFO_PLIST"
+          else
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 1" "$INFO_PLIST"
+          fi
+
+          plutil -lint "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST"
+
       - name: Validate app bundle
         run: |
           set -euo pipefail
