@@ -1,4 +1,4 @@
-﻿name: TomkaCamera
+name: TomkaCamera
 options:
   bundleIdPrefix: com.tomkaomka
   deploymentTarget:
@@ -9,12 +9,52 @@ targets:
     platform: iOS
     sources:
       - path: ios/TomkaCamera
+        excludes:
+          - Processing/PhotoKernels.ci.metal
+    preBuildScripts:
+      - name: Compile Core Image Metal Kernel
+        inputFiles:
+          - $(SRCROOT)/ios/TomkaCamera/Processing/PhotoKernels.ci.metal
+        outputFiles:
+          - $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/PhotoKernels.ci.metallib
+        basedOnDependencyAnalysis: true
+        script: |
+          set -euo pipefail
+
+          case "${PLATFORM_NAME}" in
+            iphoneos) METAL_SDK="iphoneos" ;;
+            iphonesimulator) METAL_SDK="iphonesimulator" ;;
+            *)
+              echo "Unsupported platform for Core Image Metal kernel: ${PLATFORM_NAME}"
+              exit 1
+              ;;
+          esac
+
+          AIR_FILE="${DERIVED_FILE_DIR}/PhotoKernels.ci.air"
+          OUTPUT_FILE="${SCRIPT_OUTPUT_FILE_0}"
+          FRAMEWORK_HEADERS="${SDKROOT}/System/Library/Frameworks"
+
+          mkdir -p "$(dirname "${AIR_FILE}")" "$(dirname "${OUTPUT_FILE}")"
+
+          xcrun --sdk "${METAL_SDK}" metal \
+            -c -fcikernel \
+            -I "${FRAMEWORK_HEADERS}" \
+            "${SCRIPT_INPUT_FILE_0}" \
+            -o "${AIR_FILE}"
+
+          xcrun --sdk "${METAL_SDK}" metallib \
+            -cikernel "${AIR_FILE}" \
+            -o "${OUTPUT_FILE}"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tomkaomka.TomkaCamera
         PRODUCT_NAME: TomkaCamera
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        INFOPLIST_KEY_CFBundleDisplayName: "Tomka Camera"
+        INFOPLIST_KEY_CFBundleShortVersionString: "0.1.0"
+        INFOPLIST_KEY_CFBundleVersion: "1"
         INFOPLIST_KEY_NSCameraUsageDescription: "TomkaCamera uses the camera to take photos."
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "TomkaCamera saves photos to your library."
         GENERATE_INFOPLIST_FILE: YES
