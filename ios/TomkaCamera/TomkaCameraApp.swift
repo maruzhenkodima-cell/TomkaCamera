@@ -10,7 +10,7 @@ struct TomkaCameraApp: App {
 }
 
 struct ContentView: View {
-    @Environment(\\.scenePhase) private var scenePhase
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraManager()
     @State private var showManualControls = false
     @State private var showOriginal = false
