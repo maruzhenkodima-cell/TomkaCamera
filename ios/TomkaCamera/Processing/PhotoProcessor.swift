@@ -168,7 +168,18 @@ enum PhotoProcessor {
             commonExtent = commonExtent.intersection(image.extent)
         }
 
-        commonExtent = commonExtent.integral
+        // Round inward, not outward: expanding the intersection would sample
+        // transparent pixels along the edges of translated frames.
+        let safeMinX = ceil(commonExtent.minX)
+        let safeMinY = ceil(commonExtent.minY)
+        let safeMaxX = floor(commonExtent.maxX)
+        let safeMaxY = floor(commonExtent.maxY)
+        commonExtent = CGRect(
+            x: safeMinX,
+            y: safeMinY,
+            width: max(0, safeMaxX - safeMinX),
+            height: max(0, safeMaxY - safeMinY)
+        )
 
         guard !commonExtent.isNull,
               !commonExtent.isEmpty,
