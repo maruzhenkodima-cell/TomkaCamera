@@ -75,6 +75,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     @Published var multiFrameEnabled = true
     @Published var flashMode: CameraFlashMode = .off
+    @Published var availableFlashModes: [CameraFlashMode] = [.off]
     @Published var hasFlash = false
     @Published var proRAWAvailable = false
     @Published var useProRAW = false
@@ -311,8 +312,16 @@ final class CameraManager: NSObject, ObservableObject {
 
                 DispatchQueue.main.async {
                     self.proRAWAvailable = proRAWAvailable
-                    self.hasFlash = camera.hasFlash &&
-                        !self.photoOutput.supportedFlashModes.isEmpty
+                    let supportedFlashModes = self.photoOutput.supportedFlashModes
+                    var availableModes: [CameraFlashMode] = [.off]
+                    if supportedFlashModes.contains(.auto) {
+                        availableModes.append(.auto)
+                    }
+                    if supportedFlashModes.contains(.on) {
+                        availableModes.append(.on)
+                    }
+                    self.availableFlashModes = availableModes
+                    self.hasFlash = camera.hasFlash && availableModes.count > 1
                     self.maxZoomFactor = max(1.0, supportedZoom)
                     self.minISO = minimumISO
                     self.maxISO = max(minimumISO + 1, maximumISO)
@@ -622,10 +631,17 @@ final class CameraManager: NSObject, ObservableObject {
 
                 self.currentISO = Double(camera.iso)
                 self.currentFocusPosition = Double(camera.lensPosition)
+                self.currentShutterPosition = self.shutterPositionForCurrentExposure(camera)
+                let temperatureAndTint = camera.temperatureAndTintValues(
+                    for: camera.deviceWhiteBalanceGains
+                )
+                self.currentTemperature = Double(temperatureAndTint.temperature)
 
                 DispatchQueue.main.async {
                     self.isoValue = self.currentISO
                     self.focusPosition = self.currentFocusPosition
+                    self.shutterPosition = self.currentShutterPosition
+                    self.colorTemperature = self.currentTemperature
                     self.isExposureManual = false
                     self.isFocusManual = false
                     self.isWhiteBalanceManual = false
@@ -637,6 +653,27 @@ final class CameraManager: NSObject, ObservableObject {
                 self.publishError("Не удалось включить автоматику: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func shutterPositionForCurrentExposure(_ camera: AVCaptureDevice) -> Double {
+        let minimum = max(
+            1.0 / 10000.0,
+            camera.activeFormat.minExposureDuration.seconds
+        )
+        let maximum = max(
+            minimum,
+            min(1.0, camera.activeFormat.maxExposureDuration.seconds)
+        )
+        guard maximum > minimum else { return 0.5 }
+
+        let duration = min(
+            maximum,
+            max(minimum, camera.exposureDuration.seconds)
+        )
+        return min(
+            1.0,
+            max(0.0, log(duration / minimum) / log(maximum / minimum))
+        )
     }
 
     func takePhoto() {
