@@ -22,22 +22,21 @@ enum PhotoProcessor {
         .cacheIntermediates: false
     ])
 
-    // A per-channel median rejects a single inconsistent frame (for example,
-    // a moving object or a transient alignment error) instead of averaging it
-    // into a visible ghost. The ordinary blend remains the fallback.
-    private static let medianKernel = CIColorKernel(source: """
-    kernel vec4 median3(sampler first, sampler second, sampler third) {
-        vec4 a = sample(first, samplerCoord(first));
-        vec4 b = sample(second, samplerCoord(second));
-        vec4 c = sample(third, samplerCoord(third));
+    // Load the precompiled Metal Core Image kernel. This avoids the deprecated
+    // Core Image Kernel Language source initializer and compiles the shader at build time.
+    private static let medianKernel: CIColorKernel? = {
+        guard let url = Bundle.main.url(
+            forResource: "PhotoKernels",
+            withExtension: "ci.metallib"
+        ), let data = try? Data(contentsOf: url) else {
+            return nil
+        }
 
-        vec4 lowValue = min(a, b);
-        vec4 highValue = max(a, b);
-        vec4 middleValue = max(lowValue, min(highValue, c));
-
-        return vec4(middleValue.rgb, 1.0);
-    }
-    """)
+        return try? CIColorKernel(
+            functionName: "median3",
+            fromMetalLibraryData: data
+        )
+    }()
 
     private struct AlignedFrame {
         let image: CIImage
