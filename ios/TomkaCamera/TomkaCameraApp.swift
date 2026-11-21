@@ -39,8 +39,30 @@ struct ContentView: View {
     private var cameraScreen: some View {
         ZStack {
             if camera.isAuthorized {
-                CameraPreview(session: camera.session)
-                    .ignoresSafeArea()
+                CameraPreview(session: camera.session) { devicePoint, displayPoint in
+                    camera.focus(at: devicePoint, displayPoint: displayPoint)
+                }
+                .ignoresSafeArea()
+
+                if camera.showCompositionGrid {
+                    CompositionGrid()
+                        .stroke(.white.opacity(0.42), lineWidth: 0.7)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                }
+
+                GeometryReader { geometry in
+                    if let point = camera.focusIndicatorPoint {
+                        FocusReticle()
+                            .position(
+                                x: point.x * geometry.size.width,
+                                y: point.y * geometry.size.height
+                            )
+                            .allowsHitTesting(false)
+                    }
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             }
 
             VStack(spacing: 12) {
@@ -128,6 +150,21 @@ struct ContentView: View {
                         .font(.caption)
                         .tint(.white)
                         .padding(.horizontal, 24)
+                        .disabled(camera.useProRAW)
+
+                    Toggle(
+                        camera.proRAWAvailable ? "Apple ProRAW (DNG)" : "Apple ProRAW недоступен",
+                        isOn: $camera.useProRAW
+                    )
+                    .font(.caption)
+                    .tint(.white)
+                    .padding(.horizontal, 24)
+                    .disabled(!camera.proRAWAvailable)
+
+                    Toggle("Сетка третей", isOn: $camera.showCompositionGrid)
+                        .font(.caption)
+                        .tint(.white)
+                        .padding(.horizontal, 24)
 
                     Button {
                         camera.takePhoto()
@@ -210,6 +247,24 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 HStack {
+                    Text("Экспокоррекция EV")
+                    Spacer()
+                    Text(String(format: "%+.1f", camera.exposureBias))
+                        .monospacedDigit()
+                }
+                Slider(
+                    value: Binding(
+                        get: { camera.exposureBias },
+                        set: { camera.setExposureBias($0) }
+                    ),
+                    in: camera.minExposureBias...camera.maxExposureBias,
+                    step: 0.1
+                )
+                .disabled(camera.isExposureManual)
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
                     Text("Фокус")
                     Spacer()
                     Text(String(format: "%.2f", camera.focusPosition))
@@ -241,7 +296,7 @@ struct ContentView: View {
                 )
             }
 
-            Text("Перемещение ползунка включает ручной режим соответствующего параметра. «Авто» возвращает автоматику.")
+            Text("Коснись нужной области кадра для фокусировки. EV регулирует яркость в автоматическом режиме. ProRAW сохраняет DNG и отключает серию.")
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.7))
                 .fixedSize(horizontal: false, vertical: true)
@@ -319,5 +374,37 @@ struct ContentView: View {
             .padding(.bottom, 24)
         }
         .padding()
+    }
+}
+
+
+private struct CompositionGrid: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for fraction in [1.0 / 3.0, 2.0 / 3.0] {
+            let x = rect.width * fraction
+            let y = rect.height * fraction
+            path.move(to: CGPoint(x: x, y: rect.minY))
+            path.addLine(to: CGPoint(x: x, y: rect.maxY))
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            path.addLine(to: CGPoint(x: rect.maxX, y: y))
+        }
+        return path
+    }
+}
+
+private struct FocusReticle: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 5)
+                .stroke(.yellow, lineWidth: 1.5)
+                .frame(width: 72, height: 72)
+
+            Circle()
+                .stroke(.yellow.opacity(0.9), lineWidth: 1)
+                .frame(width: 7, height: 7)
+        }
+        .shadow(color: .black.opacity(0.65), radius: 2)
+        .transition(.opacity)
     }
 }
