@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Photos
+import UniformTypeIdentifiers
 import UIKit
 
 final class CameraManager: NSObject, ObservableObject {
@@ -719,14 +720,23 @@ final class CameraManager: NSObject, ObservableObject {
         successMessage: String
     ) {
         PHPhotoLibrary.shared().performChanges({
-            let processedRequest = PHAssetCreationRequest.forAsset()
-            processedRequest.addResource(with: .photo, data: data, options: nil)
+            let request = PHAssetCreationRequest.forAsset()
 
             if let rawData {
-                let rawRequest = PHAssetCreationRequest.forAsset()
+                // Store RAW and its rendered companion as one paired asset in Photos.
                 let rawOptions = PHAssetResourceCreationOptions()
                 rawOptions.uniformTypeIdentifier = "com.adobe.raw-image"
-                rawRequest.addResource(with: .photo, data: rawData, options: rawOptions)
+                request.addResource(with: .photo, data: rawData, options: rawOptions)
+
+                let renderedOptions = PHAssetResourceCreationOptions()
+                renderedOptions.uniformTypeIdentifier = UTType.jpeg.identifier
+                request.addResource(
+                    with: .alternatePhoto,
+                    data: data,
+                    options: renderedOptions
+                )
+            } else {
+                request.addResource(with: .photo, data: data, options: nil)
             }
         }) { [weak self] success, error in
             if success {
