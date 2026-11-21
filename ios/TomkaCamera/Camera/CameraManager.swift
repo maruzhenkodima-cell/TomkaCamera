@@ -1,4 +1,4 @@
-﻿import AVFoundation
+import AVFoundation
 import Combine
 import UIKit
 
@@ -7,11 +7,14 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
 
     private let sessionQueue = DispatchQueue(label: "tomka.camera.session")
     private let photoOutput = AVCapturePhotoOutput()
+    private var cameraDevice: AVCaptureDevice?
     private var isConfigured = false
 
     @Published var isAuthorized = false
     @Published var errorMessage: String?
     @Published var capturedImage: UIImage?
+    @Published var zoomFactor: CGFloat = 1.0
+    @Published var maxZoomFactor: CGFloat = 10.0
 
     func requestPermission() {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -76,6 +79,12 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                 }
                 self.session.addOutput(self.photoOutput)
 
+                self.cameraDevice = camera
+                let supportedZoom = min(CGFloat(10.0), camera.activeFormat.videoMaxZoomFactor)
+                DispatchQueue.main.async {
+                    self.maxZoomFactor = max(1.0, supportedZoom)
+                }
+
                 self.isConfigured = true
                 self.session.commitConfiguration()
                 self.session.startRunning()
@@ -83,6 +92,29 @@ final class CameraManager: NSObject, ObservableObject, AVCapturePhotoCaptureDele
                 self.session.commitConfiguration()
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func setZoom(_ factor: CGFloat) {
+        sessionQueue.async {
+            guard let camera = self.cameraDevice else { return }
+
+            let deviceMaximum = min(CGFloat(10.0), camera.activeFormat.videoMaxZoomFactor)
+            let clampedFactor = max(1.0, min(factor, deviceMaximum))
+
+            do {
+                try camera.lockForConfiguration()
+                camera.videoZoomFactor = clampedFactor
+                camera.unlockForConfiguration()
+
+                DispatchQueue.main.async {
+                    self.zoomFactor = clampedFactor
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.errorMessage = "Не удалось изменить увеличение: \(error.localizedDescription)"
                 }
             }
         }
