@@ -1,4 +1,4 @@
-﻿name: Build iOS App
+name: Build TomkaCamera Beta
 
 on:
   workflow_dispatch:
@@ -6,12 +6,13 @@ on:
     branches: [main]
 
 concurrency:
-  group: ios-build-${{ github.ref }}
+  group: ios-beta-build-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: macos-15
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,18 +26,62 @@ jobs:
       - name: Generate project
         run: xcodegen generate
 
-      - name: Build iOS app
+      - name: Build iOS device app
         run: |
+          set -euo pipefail
           xcodebuild \
             -project TomkaCamera.xcodeproj \
             -scheme TomkaCamera \
             -sdk iphoneos \
             -configuration Release \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
 
-      - name: Upload app
+      - name: Validate app bundle
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/TomkaCamera.app"
+          INFO_PLIST="$APP_PATH/Info.plist"
+
+          test -d "$APP_PATH"
+          test -f "$INFO_PLIST"
+          plutil -lint "$INFO_PLIST"
+
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$INFO_PLIST")
+          SHORT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST")
+          BUILD_NUMBER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST")
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$INFO_PLIST")
+
+          test "$BUNDLE_ID" = "com.tomkaomka.TomkaCamera"
+          test "$SHORT_VERSION" = "0.1.0"
+          test "$BUILD_NUMBER" = "1"
+          test -x "$APP_PATH/$EXECUTABLE"
+          lipo -verify_arch arm64 "$APP_PATH/$EXECUTABLE"
+
+          echo "Validated: $BUNDLE_ID $SHORT_VERSION ($BUILD_NUMBER), arm64"
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP_PATH="build/Build/Products/Release-iphoneos/TomkaCamera.app"
+          IPA_ROOT="$RUNNER_TEMP/tomkacamera-ipa"
+          IPA_PATH="$GITHUB_WORKSPACE/TomkaCamera-beta-0.1.0-unsigned.ipa"
+
+          rm -rf "$IPA_ROOT"
+          mkdir -p "$IPA_ROOT/Payload"
+          ditto "$APP_PATH" "$IPA_ROOT/Payload/TomkaCamera.app"
+          (cd "$IPA_ROOT" && /usr/bin/zip -qry "$IPA_PATH" Payload)
+
+          test -s "$IPA_PATH"
+          /usr/bin/unzip -tq "$IPA_PATH"
+          /usr/bin/unzip -Z -1 "$IPA_PATH" | grep -Fx "Payload/TomkaCamera.app/Info.plist"
+          ls -lh "$IPA_PATH"
+
+      - name: Upload install package
         uses: actions/upload-artifact@v4
         with:
-          name: TomkaCamera-unsigned
-          path: build/Build/Products/Release-iphoneos/TomkaCamera.app
+          name: TomkaCamera-beta-0.1.0-unsigned-IPA
+          path: TomkaCamera-beta-0.1.0-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
