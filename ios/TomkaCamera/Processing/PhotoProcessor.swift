@@ -137,9 +137,19 @@ enum PhotoProcessor {
             orientation: .up
         )
 
+        let sourceMetadata: [CFString: Any]
+        if let source = CGImageSourceCreateWithData(firstData as CFData, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any] {
+            sourceMetadata = properties
+        } else {
+            sourceMetadata = [:]
+        }
+
         let outputData = try jpegData(
             from: outputCGImage,
-            quality: 0.97
+            quality: 0.97,
+            preserving: sourceMetadata
         )
 
         return PhotoProcessingResult(
@@ -251,7 +261,8 @@ enum PhotoProcessor {
 
     private static func jpegData(
         from image: CGImage,
-        quality: CGFloat
+        quality: CGFloat,
+        preserving sourceMetadata: [CFString: Any]
     ) throws -> Data {
         let data = NSMutableData()
 
@@ -264,10 +275,23 @@ enum PhotoProcessor {
             throw ProcessingError.encodingFailed
         }
 
+        var metadata = sourceMetadata
+        metadata[kCGImagePropertyOrientation] = 1
+        metadata[kCGImagePropertyPixelWidth] = image.width
+        metadata[kCGImagePropertyPixelHeight] = image.height
+
+        if var exif = metadata[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            exif[kCGImagePropertyExifPixelXDimension] = image.width
+            exif[kCGImagePropertyExifPixelYDimension] = image.height
+            metadata[kCGImagePropertyExifDictionary] = exif
+        }
+
+        metadata[kCGImageDestinationLossyCompressionQuality] = quality
+
         CGImageDestinationAddImage(
             destination,
             image,
-            [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+            metadata as CFDictionary
         )
 
         guard CGImageDestinationFinalize(destination) else {
