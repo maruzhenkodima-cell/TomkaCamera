@@ -10,6 +10,7 @@ struct TomkaCameraApp: App {
 }
 
 struct ContentView: View {
+    @Environment(\\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraManager()
     @State private var showManualControls = false
     @State private var showOriginal = false
@@ -33,6 +34,10 @@ struct ContentView: View {
         .preferredColorScheme(.dark)
         .onAppear {
             camera.requestPermission()
+            camera.setSessionActive(scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { newPhase in
+            camera.setSessionActive(newPhase == .active)
         }
     }
 
@@ -146,11 +151,26 @@ struct ContentView: View {
                     .disabled(!camera.isAuthorized || camera.maxZoomFactor <= 1.0)
                     .padding(.horizontal, 24)
 
+                    if camera.hasFlash {
+                        HStack(spacing: 10) {
+                            Image(systemName: "bolt.fill")
+                                .foregroundStyle(.yellow)
+                            Picker("Вспышка", selection: $camera.flashMode) {
+                                ForEach(camera.availableFlashModes) { mode in
+                                    Text(mode.title).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, 24)
+                    }
+
                     Toggle("Серия из 3 кадров (меньше шума)", isOn: $camera.multiFrameEnabled)
                         .font(.caption)
                         .tint(.white)
                         .padding(.horizontal, 24)
-                        .disabled(camera.useProRAW)
+                        .disabled(camera.useProRAW || camera.flashMode != .off)
 
                     Toggle(
                         camera.proRAWAvailable ? "Apple ProRAW (DNG)" : "Apple ProRAW недоступен",
@@ -159,7 +179,7 @@ struct ContentView: View {
                     .font(.caption)
                     .tint(.white)
                     .padding(.horizontal, 24)
-                    .disabled(!camera.proRAWAvailable)
+                    .disabled(!camera.proRAWAvailable || camera.flashMode != .off)
 
                     Toggle("Сетка третей", isOn: $camera.showCompositionGrid)
                         .font(.caption)
@@ -296,7 +316,7 @@ struct ContentView: View {
                 )
             }
 
-            Text("Коснись нужной области кадра для фокусировки. EV регулирует яркость в автоматическом режиме. ProRAW сохраняет DNG и отключает серию.")
+            Text("Коснись нужной области кадра для фокусировки. EV регулирует яркость в автоматическом режиме. ProRAW сохраняет DNG. Вспышка отключает серию кадров.")
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.7))
                 .fixedSize(horizontal: false, vertical: true)
