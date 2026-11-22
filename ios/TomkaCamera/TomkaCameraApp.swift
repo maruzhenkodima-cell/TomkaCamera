@@ -460,11 +460,18 @@ private struct PhotoReviewView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(.black)
                 } else {
-                    ContentUnavailableView(
-                        "Нет снимка",
-                        systemImage: "photo",
-                        description: Text("Сделайте фотографию, чтобы посмотреть результат.")
-                    )
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.secondary)
+                        Text("Нет снимка")
+                            .font(.headline)
+                        Text("Сделайте фотографию, чтобы посмотреть результат.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
                 if camera.originalCapturedImage != nil {
