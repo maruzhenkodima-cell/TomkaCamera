@@ -24,17 +24,91 @@ struct ContentView: View {
     private let zoomPresets: [CGFloat] = [1.0, 2.0, 3.0]
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color.black
-                cameraScreen(
-                    topInset: geometry.safeAreaInsets.top,
-                    bottomInset: geometry.safeAreaInsets.bottom
-                )
+        ZStack {
+            // Only the visual background ignores safe areas.
+            // The controls stay in the safe area; the camera image fills the physical display.
+            Color.black
+                .ignoresSafeArea()
+
+            if camera.isAuthorized {
+                CameraPreview(session: camera.session) { devicePoint, displayPoint in
+                    camera.focus(at: devicePoint, displayPoint: displayPoint)
+                }
+                .ignoresSafeArea()
+                .zIndex(0)
+
+                if camera.showCompositionGrid {
+                    CompositionGrid()
+                        .stroke(.white.opacity(0.42), lineWidth: 0.7)
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                        .zIndex(1)
+                }
+
+                GeometryReader { geometry in
+                    if let point = camera.focusIndicatorPoint {
+                        FocusReticle()
+                            .position(
+                                x: point.x * geometry.size.width,
+                                y: point.y * geometry.size.height
+                            )
+                            .allowsHitTesting(false)
+                    }
+                }
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+                .zIndex(2)
+            } else {
+                Text("Ожидание доступа к камере…")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.8))
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+
+            // Full-width fade sits behind the controls and extends to the bottom screen edge.
+            LinearGradient(
+                stops: [
+                    .init(color: .clear, location: 0),
+                    .init(color: .black.opacity(0.18), location: 0.28),
+                    .init(color: .black.opacity(0.72), location: 0.72),
+                    .init(color: .black.opacity(0.94), location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 300)
+            .ignoresSafeArea(edges: .bottom)
+            .frame(maxHeight: .infinity, alignment: .bottom)
+            .allowsHitTesting(false)
+            .zIndex(3)
+
+            VStack(spacing: 0) {
+                topBar
+
+                Spacer(minLength: 16)
+
+                if let message = camera.errorMessage ?? camera.statusMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(camera.errorMessage == nil ? .white : .red)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.black.opacity(0.68), in: Capsule())
+                        .padding(.bottom, 10)
+                }
+
+                bottomControls
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .zIndex(4)
         }
-        .ignoresSafeArea()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
         .preferredColorScheme(.dark)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
@@ -57,78 +131,6 @@ struct ContentView: View {
         .onChange(of: scenePhase) { newPhase in
             camera.setSessionActive(newPhase == .active)
         }
-    }
-
-    private func cameraScreen(topInset: CGFloat, bottomInset: CGFloat) -> some View {
-        ZStack(alignment: .bottom) {
-            if camera.isAuthorized {
-                CameraPreview(session: camera.session) { devicePoint, displayPoint in
-                    camera.focus(at: devicePoint, displayPoint: displayPoint)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.black)
-
-                if camera.showCompositionGrid {
-                    CompositionGrid()
-                        .stroke(.white.opacity(0.42), lineWidth: 0.7)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .allowsHitTesting(false)
-                }
-
-                GeometryReader { geometry in
-                    if let point = camera.focusIndicatorPoint {
-                        FocusReticle()
-                            .position(
-                                x: point.x * geometry.size.width,
-                                y: point.y * geometry.size.height
-                            )
-                            .allowsHitTesting(false)
-                    }
-                }
-                .allowsHitTesting(false)
-            } else {
-                Text("Ожидание доступа к камере…")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
-            }
-
-            // A full-width gradient is a separate layer, not the width of the padded controls.
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.58), .black.opacity(0.92)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(maxWidth: .infinity)
-            .frame(height: 290)
-            .allowsHitTesting(false)
-
-            VStack(spacing: 0) {
-                topBar
-
-                Spacer(minLength: 12)
-
-                if let message = camera.errorMessage ?? camera.statusMessage {
-                    Text(message)
-                        .font(.footnote)
-                        .foregroundStyle(camera.errorMessage == nil ? .white : .red)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.black.opacity(0.68), in: Capsule())
-                        .padding(.bottom, 10)
-                }
-
-                bottomControls
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, max(topInset, 48) + 8)
-            .padding(.bottom, max(bottomInset, 24) + 8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
-        .clipped()
     }
 
     private var topBar: some View {
