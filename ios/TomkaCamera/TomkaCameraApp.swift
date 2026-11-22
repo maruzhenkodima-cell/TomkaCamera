@@ -162,9 +162,11 @@ struct ContentView: View {
         if #available(iOS 26.0, *) {
             GlassEffectContainer(spacing: 6) {
                 topBarControls
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
         } else {
             topBarControls
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
