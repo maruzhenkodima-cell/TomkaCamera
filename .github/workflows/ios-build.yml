@@ -55,9 +55,9 @@ jobs:
           fi
 
           if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST" >/dev/null 2>&1; then
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 6" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 7" "$INFO_PLIST"
           else
-            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 6" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 7" "$INFO_PLIST"
           fi
 
           plutil -lint "$INFO_PLIST"
@@ -83,7 +83,7 @@ jobs:
 
           test "$BUNDLE_ID" = "com.tomkaomka.TomkaCamera"
           test "$SHORT_VERSION" = "0.1.6"
-          test "$BUILD_NUMBER" = "6"
+          test "$BUILD_NUMBER" = "7"
           echo "CFBundleShortVersionString=$SHORT_VERSION"
           echo "CFBundleVersion=$BUILD_NUMBER"
           test -x "$APP_PATH/$EXECUTABLE"
