@@ -180,7 +180,7 @@ struct ContentView: View {
             }
 
             chromeButton(
-                symbol: camera.showCompositionGrid ? "grid" : "grid",
+                symbol: camera.showCompositionGrid ? "grid" : "square.grid.3x3,
                 title: "СЕТКА",
                 isActive: camera.showCompositionGrid
             ) {
