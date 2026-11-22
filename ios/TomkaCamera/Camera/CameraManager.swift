@@ -1002,17 +1002,46 @@ final class CameraManager: NSObject, ObservableObject {
         rawData: Data?,
         successMessage: String
     ) {
+        // PhotoKit handles ProRAW/DNG more reliably as a file-backed resource.
+        // In particular, keep the .dng extension so Photos can identify the RAW container.
+        let rawFileURL: URL?
+        if let rawData {
+            let fileName = "TomkaCamera-\(UUID().uuidString).dng"
+            let fileURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(fileName, isDirectory: false)
+
+            do {
+                try rawData.write(to: fileURL, options: .atomic)
+                rawFileURL = fileURL
+            } catch {
+                finishPhotoSave(
+                    success: false,
+                    message: "Не удалось подготовить ProRAW-файл: \(error.localizedDescription)"
+                )
+                return
+            }
+        } else {
+            rawFileURL = nil
+        }
+
         PHPhotoLibrary.shared().performChanges({
             let request = PHAssetCreationRequest.forAsset()
 
-            if let rawData {
-                // Store RAW and its rendered companion as one paired asset in Photos.
+            if let rawFileURL {
+                // Store the DNG as the main/original resource using a file URL.
                 let rawOptions = PHAssetResourceCreationOptions()
-                rawOptions.uniformTypeIdentifier = "com.adobe.raw-image"
-                request.addResource(with: .photo, data: rawData, options: rawOptions)
+                rawOptions.originalFilename = rawFileURL.lastPathComponent
+                rawOptions.shouldMoveFile = true
+                request.addResource(
+                    with: .photo,
+                    fileURL: rawFileURL,
+                    options: rawOptions
+                )
 
+                // Keep the rendered JPEG as the paired alternate resource.
                 let renderedOptions = PHAssetResourceCreationOptions()
-                renderedOptions.uniformTypeIdentifier = UTType.jpeg.identifier
+                renderedOptions.originalFilename = "TomkaCamera.jpg"
+                renderedOptions.contentType = UTType.jpeg
                 request.addResource(
                     with: .alternatePhoto,
                     data: data,
@@ -1022,12 +1051,22 @@ final class CameraManager: NSObject, ObservableObject {
                 request.addResource(with: .photo, data: data, options: nil)
             }
         }) { [weak self] success, error in
+            // If Photos didn't move the temporary DNG (for example, on failure), clean it up.
+            if let rawFileURL,
+               FileManager.default.fileExists(atPath: rawFileURL.path) {
+                try? FileManager.default.removeItem(at: rawFileURL)
+            }
+
             if success {
                 self?.finishPhotoSave(success: true, message: successMessage)
+            } else if let error {
+                let nsError = error as NSError
+                let details = "\(nsError.localizedDescription) (\(nsError.domain), code \(nsError.code))"
+                self?.finishPhotoSave(success: false, message: details)
             } else {
                 self?.finishPhotoSave(
                     success: false,
-                    message: error?.localizedDescription ?? "Не удалось сохранить снимок."
+                    message: "Не удалось сохранить снимок в медиатеку."
                 )
             }
         }
