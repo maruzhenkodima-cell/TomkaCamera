@@ -2,8 +2,10 @@ name: Build TomkaCamera Beta
 
 on:
   workflow_dispatch:
-  push:
+  pull_request:
     branches: [main]
+  push:
+    branches: ["**"]
 
 concurrency:
   group: ios-beta-build-${{ github.ref }}
