@@ -102,13 +102,18 @@ struct ContentView: View {
                 bottomControls
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 6)
+            // ContentView now truly occupies the complete display; keep controls clear
+            // of the iPhone 14 Pro Dynamic Island and home-indicator gesture region.
+            .padding(.top, 58)
+            .padding(.bottom, 28)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .zIndex(4)
         }
+        // Expand the ROOT SwiftUI view itself into the iPhone safe-area regions.
+        // Expanding only CameraPreview leaves the root container letterboxed to the safe area.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
+        .ignoresSafeArea(.all, edges: .all)
+        .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
