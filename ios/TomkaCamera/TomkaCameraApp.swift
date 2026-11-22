@@ -9,29 +9,40 @@ struct TomkaCameraApp: App {
     }
 }
 
+private enum CameraSheet: String, Identifiable {
+    case settings
+    case photoReview
+
+    var id: String { rawValue }
+}
+
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraManager()
-    @State private var showManualControls = false
-    @State private var showOriginal = false
+    @State private var activeSheet: CameraSheet?
 
     private let zoomPresets: [CGFloat] = [1.0, 2.0, 3.0]
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-
-            if let image = showOriginal
-                ? camera.originalCapturedImage
-                : camera.capturedImage {
-                photoReview(image)
-            } else if let image = camera.capturedImage {
-                photoReview(image)
-            } else {
-                cameraScreen
-            }
+            cameraScreen
         }
         .preferredColorScheme(.dark)
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
+        .sheet(item: $activeSheet) { sheet in
+            switch sheet {
+            case .settings:
+                CameraSettingsView(camera: camera) {
+                    activeSheet = nil
+                }
+            case .photoReview:
+                PhotoReviewView(camera: camera) {
+                    activeSheet = nil
+                }
+            }
+        }
         .onAppear {
             camera.requestPermission()
             camera.setSessionActive(scenePhase == .active)
@@ -68,344 +79,439 @@ struct ContentView: View {
                 }
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
+            } else {
+                Text("Ожидание доступа к камере…")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.8))
             }
 
-            VStack(spacing: 12) {
-                HStack {
-                    Text("TOMKA CAMERA")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                        .tracking(2)
-                    Spacer()
-                    Button {
-                        showManualControls.toggle()
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 19, weight: .semibold))
-                            .frame(width: 42, height: 42)
-                            .background(.black.opacity(0.42), in: Circle())
-                    }
-                    .accessibilityLabel("Ручные настройки")
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 12)
+            VStack(spacing: 0) {
+                topBar
 
-                Spacer()
+                Spacer(minLength: 12)
 
-                if let message = camera.errorMessage {
+                if let message = camera.errorMessage ?? camera.statusMessage {
                     Text(message)
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(camera.errorMessage == nil ? .white : .red)
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 8)
-                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 12))
-                } else if let status = camera.statusMessage {
-                    Text(status)
-                        .font(.footnote)
-                        .foregroundStyle(.white)
+                        .lineLimit(2)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(.black.opacity(0.65), in: Capsule())
-                } else if !camera.isAuthorized {
-                    Text("Ожидание доступа к камере…")
-                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.68), in: Capsule())
+                        .padding(.bottom, 10)
                 }
 
-                if showManualControls {
-                    manualControls
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-
-                VStack(spacing: 13) {
-                    Text(String(format: "%.1f×", Double(camera.zoomFactor)))
-                        .font(.system(size: 23, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-
-                    HStack(spacing: 24) {
-                        ForEach(zoomPresets, id: \.self) { preset in
-                            Button {
-                                camera.setZoom(preset)
-                            } label: {
-                                Text(preset == 1 ? "1×" : String(format: "%.0f×", Double(preset)))
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .frame(width: 48, height: 40)
-                                    .background(
-                                        abs(camera.zoomFactor - preset) < 0.05
-                                            ? Color.white.opacity(0.32)
-                                            : Color.white.opacity(0.12),
-                                        in: Capsule()
-                                    )
-                            }
-                            .disabled(!camera.isAuthorized || camera.maxZoomFactor < preset)
-                        }
-                    }
-
-                    Slider(
-                        value: Binding(
-                            get: { camera.zoomFactor },
-                            set: { camera.setZoom($0) }
-                        ),
-                        in: 1.0...max(1.0, camera.maxZoomFactor)
-                    )
-                    .tint(.white)
-                    .disabled(!camera.isAuthorized || camera.maxZoomFactor <= 1.0)
-                    .padding(.horizontal, 24)
-
-                    if camera.hasFlash {
-                        HStack(spacing: 10) {
-                            Image(systemName: "bolt.fill")
-                                .foregroundStyle(.yellow)
-                            Picker("Вспышка", selection: $camera.flashMode) {
-                                ForEach(camera.availableFlashModes) { mode in
-                                    Text(mode.title).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .disabled(camera.useProRAW)
-                        }
-                        .font(.caption)
-                        .padding(.horizontal, 24)
-                    }
-
-                    Toggle("Серия из 3 кадров (меньше шума)", isOn: $camera.multiFrameEnabled)
-                        .font(.caption)
-                        .tint(.white)
-                        .padding(.horizontal, 24)
-                        .disabled(camera.useProRAW || camera.flashMode != .off)
-
-                    Toggle(
-                        camera.proRAWAvailable ? "Apple ProRAW (DNG)" : "Apple ProRAW недоступен",
-                        isOn: $camera.useProRAW
-                    )
-                    .font(.caption)
-                    .tint(.white)
-                    .padding(.horizontal, 24)
-                    .disabled(!camera.proRAWAvailable || camera.flashMode != .off)
-
-                    Toggle("Сетка третей", isOn: $camera.showCompositionGrid)
-                        .font(.caption)
-                        .tint(.white)
-                        .padding(.horizontal, 24)
-
-                    Button {
-                        camera.takePhoto()
-                    } label: {
-                        ZStack {
-                            Circle()
-                                .fill(.white)
-                                .frame(width: 76, height: 76)
-                            Circle()
-                                .stroke(.gray, lineWidth: 4)
-                                .frame(width: 66, height: 66)
-                            if camera.isCapturing || camera.isSavingPhoto {
-                                ProgressView()
-                                    .tint(.black)
-                            }
-                        }
-                    }
-                    .disabled(!camera.isAuthorized || camera.isCapturing || camera.isSavingPhoto)
-                    .padding(.top, 2)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                .padding(.bottom, 26)
-                .background(
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.72), .black.opacity(0.88)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .ignoresSafeArea(edges: .bottom)
-                )
+                bottomControls
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
         }
     }
 
-    private var manualControls: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("TOMKA CAMERA")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .tracking(1.5)
+                Text("BETA")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .tracking(2)
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+
+            Spacer()
+
+            Button(action: cycleFlashMode) {
+                VStack(spacing: 2) {
+                    Image(systemName: flashSymbol)
+                        .font(.system(size: 17, weight: .semibold))
+                    Text(camera.flashMode.title)
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .frame(width: 48, height: 42)
+                .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Вспышка: \(camera.flashMode.title)")
+
+            Button {
+                camera.showCompositionGrid.toggle()
+            } label: {
+                Image(systemName: camera.showCompositionGrid ? "grid" : "grid")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 42, height: 42)
+                    .background(
+                        camera.showCompositionGrid ? .white.opacity(0.24) : .black.opacity(0.42),
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Переключить сетку")
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var flashSymbol: String {
+        switch camera.flashMode {
+        case .off: return "bolt.slash"
+        case .auto: return "bolt.badge.a"
+        case .on: return "bolt.fill"
+        }
+    }
+
+    private func cycleFlashMode() {
+        let modes = camera.availableFlashModes
+        guard !modes.isEmpty else { return }
+        let currentIndex = modes.firstIndex(of: camera.flashMode) ?? 0
+        camera.flashMode = modes[(currentIndex + 1) % modes.count]
+    }
+
+    private var bottomControls: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                ForEach(zoomPresets, id: \.self) { preset in
+                    Button {
+                        camera.setZoom(preset)
+                    } label: {
+                        Text(preset == 1 ? "1×" : String(format: "%.0f×", Double(preset)))
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .frame(minWidth: 48, minHeight: 34)
+                            .background(
+                                abs(camera.zoomFactor - preset) < 0.05
+                                    ? Color.white.opacity(0.3)
+                                    : Color.white.opacity(0.12),
+                                in: Capsule()
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!camera.isAuthorized || camera.maxZoomFactor < preset)
+                    .opacity(camera.maxZoomFactor < preset ? 0.35 : 1)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(String(format: "%.1f×", Double(camera.zoomFactor)))
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.9))
+            }
+
+            Slider(
+                value: Binding(
+                    get: { camera.zoomFactor },
+                    set: { camera.setZoom($0) }
+                ),
+                in: 1.0...max(1.0, camera.maxZoomFactor)
+            )
+            .tint(.white)
+            .disabled(!camera.isAuthorized || camera.maxZoomFactor <= 1.0)
+            .frame(height: 18)
+
             HStack {
-                Text("РУЧНЫЕ НАСТРОЙКИ")
-                    .font(.caption.weight(.bold))
-                    .tracking(1)
+                Button {
+                    activeSheet = .photoReview
+                } label: {
+                    Group {
+                        if let image = camera.capturedImage {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "photo")
+                                .font(.system(size: 20, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.75))
+                        }
+                    }
+                    .frame(width: 52, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11)
+                            .stroke(.white.opacity(0.6), lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(camera.capturedImage == nil)
+                .opacity(camera.capturedImage == nil ? 0.55 : 1)
+                .accessibilityLabel("Посмотреть последний снимок")
+
                 Spacer()
-                Button("Авто") {
-                    camera.enableAutomaticControls()
-                }
-                .font(.caption.weight(.semibold))
-            }
 
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("ISO")
-                    Spacer()
-                    Text("\(Int(camera.isoValue))")
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { camera.isoValue },
-                        set: { camera.setISO($0) }
-                    ),
-                    in: camera.minISO...camera.maxISO
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Выдержка")
-                    Spacer()
-                    Text(camera.shutterSpeedLabel)
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { camera.shutterPosition },
-                        set: { camera.setShutterPosition($0) }
-                    ),
-                    in: 0...1
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Экспокоррекция EV")
-                    Spacer()
-                    Text(String(format: "%+.1f", camera.exposureBias))
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { camera.exposureBias },
-                        set: { camera.setExposureBias($0) }
-                    ),
-                    in: camera.minExposureBias...camera.maxExposureBias,
-                    step: 0.1
-                )
-                .disabled(camera.isExposureManual)
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Фокус")
-                    Spacer()
-                    Text(String(format: "%.2f", camera.focusPosition))
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { camera.focusPosition },
-                        set: { camera.setFocus($0) }
-                    ),
-                    in: 0...1
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 5) {
-                HStack {
-                    Text("Баланс белого")
-                    Spacer()
-                    Text("\(Int(camera.colorTemperature)) K")
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { camera.colorTemperature },
-                        set: { camera.setColorTemperature($0) }
-                    ),
-                    in: 2500...8000,
-                    step: 50
-                )
-            }
-
-            Text("Коснись нужной области кадра для фокусировки. EV регулирует яркость в автоматическом режиме. ProRAW сохраняет DNG. Вспышка отключает серию кадров.")
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.7))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .font(.subheadline)
-        .padding(16)
-        .background(.black.opacity(0.78), in: RoundedRectangle(cornerRadius: 18))
-        .padding(.horizontal, 14)
-    }
-
-    private func photoReview(_ image: UIImage) -> some View {
-        VStack(spacing: 16) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if !camera.processingDescription.isEmpty {
-                Text(camera.processingDescription)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if camera.originalCapturedImage != nil {
-                HStack(spacing: 12) {
-                    Button {
-                        showOriginal = false
-                    } label: {
-                        Text("Обработанное")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(
-                                !showOriginal ? .white.opacity(0.22) : .clear,
-                                in: Capsule()
-                            )
-                    }
-
-                    Button {
-                        showOriginal = true
-                    } label: {
-                        Text("Оригинал")
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(
-                                showOriginal ? .white.opacity(0.22) : .clear,
-                                in: Capsule()
-                            )
+                Button {
+                    camera.takePhoto()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(.white)
+                            .frame(width: 76, height: 76)
+                        Circle()
+                            .stroke(.gray.opacity(0.8), lineWidth: 4)
+                            .frame(width: 66, height: 66)
+                        if camera.isCapturing {
+                            ProgressView()
+                                .tint(.black)
+                        }
                     }
                 }
-                .font(.subheadline.weight(.semibold))
-                .overlay(Capsule().stroke(.white.opacity(0.3), lineWidth: 1))
-            }
+                .buttonStyle(.plain)
+                .disabled(!camera.isAuthorized || camera.isCapturing)
+                .accessibilityLabel("Сделать фотографию")
 
-            if camera.isSavingPhoto {
-                Label("Сохраняю в Фото…", systemImage: "arrow.down.to.line")
-                    .foregroundStyle(.white)
-            } else if let status = camera.statusMessage {
-                Label(status, systemImage: "checkmark.circle.fill")
-                    .font(.footnote)
-                    .foregroundStyle(.green)
-                    .multilineTextAlignment(.center)
-            } else if let error = camera.errorMessage {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
+                Spacer()
 
-            Button("Назад к камере") {
-                camera.capturedImage = nil
-                camera.originalCapturedImage = nil
-                camera.statusMessage = nil
-                camera.errorMessage = nil
-                showOriginal = false
+                Button {
+                    activeSheet = .settings
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 20, weight: .semibold))
+                        .frame(width: 52, height: 52)
+                        .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Настройки камеры")
             }
-            .font(.headline)
-            .foregroundStyle(.black)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 13)
-            .background(.white, in: Capsule())
-            .padding(.bottom, 24)
         }
-        .padding()
+        .padding(.horizontal, 8)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
+        .background(
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.72), .black.opacity(0.9)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea(edges: .bottom)
+        )
     }
 }
 
+private struct CameraSettingsView: View {
+    @ObservedObject var camera: CameraManager
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Съёмка") {
+                    Picker("Вспышка", selection: $camera.flashMode) {
+                        ForEach(camera.availableFlashModes) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+
+                    Toggle("Серия из 3 кадров", isOn: $camera.multiFrameEnabled)
+                        .disabled(camera.useProRAW || camera.flashMode != .off)
+
+                    if camera.flashMode != .off {
+                        Text("Серия временно недоступна со вспышкой: для стабильного совмещения трёх кадров нужна одинаковая подсветка.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if camera.useProRAW {
+                        Text("Серия отключена, пока включён ProRAW.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Toggle("Apple ProRAW (DNG)", isOn: $camera.useProRAW)
+                        .disabled(!camera.proRAWAvailable)
+
+                    if !camera.proRAWAvailable {
+                        Text("ProRAW недоступен в текущей конфигурации камеры.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Toggle("Сетка третей", isOn: $camera.showCompositionGrid)
+                }
+
+                Section("Экспозиция") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("ISO")
+                            Spacer()
+                            Text("\(Int(camera.isoValue))")
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { camera.isoValue },
+                                set: { camera.setISO($0) }
+                            ),
+                            in: camera.minISO...camera.maxISO
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Выдержка")
+                            Spacer()
+                            Text(camera.shutterSpeedLabel)
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { camera.shutterPosition },
+                                set: { camera.setShutterPosition($0) }
+                            ),
+                            in: 0...1
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Экспокоррекция EV")
+                            Spacer()
+                            Text(String(format: "%+.1f", camera.exposureBias))
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { camera.exposureBias },
+                                set: { camera.setExposureBias($0) }
+                            ),
+                            in: camera.minExposureBias...camera.maxExposureBias,
+                            step: 0.1
+                        )
+                        .disabled(camera.isExposureManual)
+                    }
+                }
+
+                Section("Фокус и цвет") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Фокус")
+                            Spacer()
+                            Text(String(format: "%.2f", camera.focusPosition))
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { camera.focusPosition },
+                                set: { camera.setFocus($0) }
+                            ),
+                            in: 0...1
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Баланс белого")
+                            Spacer()
+                            Text("\(Int(camera.colorTemperature)) K")
+                                .monospacedDigit()
+                        }
+                        Slider(
+                            value: Binding(
+                                get: { camera.colorTemperature },
+                                set: { camera.setColorTemperature($0) }
+                            ),
+                            in: 2500...8000,
+                            step: 50
+                        )
+                    }
+
+                    Button("Вернуть автоматические настройки") {
+                        camera.enableAutomaticControls()
+                    }
+                }
+
+                Section {
+                    Text("Коснись нужной области видоискателя для фокусировки. EV работает в автоматическом режиме экспозиции. ProRAW сохраняет DNG и обработанную копию.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Настройки камеры")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово", action: onDismiss)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct PhotoReviewView: View {
+    @ObservedObject var camera: CameraManager
+    let onDismiss: () -> Void
+    @State private var showOriginal = false
+
+    private var displayedImage: UIImage? {
+        if showOriginal {
+            return camera.originalCapturedImage ?? camera.capturedImage
+        }
+        return camera.capturedImage
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 14) {
+                if let image = displayedImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.black)
+                } else {
+                    ContentUnavailableView(
+                        "Нет снимка",
+                        systemImage: "photo",
+                        description: Text("Сделайте фотографию, чтобы посмотреть результат.")
+                    )
+                }
+
+                if camera.originalCapturedImage != nil {
+                    Picker("Вариант", selection: $showOriginal) {
+                        Text("Обработка").tag(false)
+                        Text("Оригинал").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                if !camera.processingDescription.isEmpty {
+                    Text(camera.processingDescription)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                if camera.isSavingPhoto {
+                    Label("Сохраняю в Фото…", systemImage: "arrow.down.to.line")
+                        .font(.footnote)
+                } else if let error = camera.errorMessage {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                } else if let status = camera.statusMessage {
+                    Text(status)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding()
+            .navigationTitle("Последний снимок")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Готово", action: onDismiss)
+                        .fontWeight(.semibold)
+                }
+            }
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+}
 
 private struct CompositionGrid: Shape {
     func path(in rect: CGRect) -> Path {
