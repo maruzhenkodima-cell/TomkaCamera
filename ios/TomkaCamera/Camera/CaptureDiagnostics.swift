@@ -1,4 +1,5 @@
 import CoreImage
+import Darwin
 import Foundation
 import ImageIO
 import UIKit
