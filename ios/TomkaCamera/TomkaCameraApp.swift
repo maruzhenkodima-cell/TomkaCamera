@@ -4,7 +4,15 @@ import SwiftUI
 struct TomkaCameraApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            // Expand the scene's root content before SwiftUI computes child layout.
+            // ContentView also ignores safe areas, but applying it here ensures the
+            // hosting root receives the full window proposal, not only the safe-area box.
+            GeometryReader { geometry in
+                ContentView()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .ignoresSafeArea(.all, edges: .all)
+            }
+            .ignoresSafeArea(.all, edges: .all)
         }
     }
 }
@@ -144,7 +152,7 @@ struct ContentView: View {
                 Text("TOMKA CAMERA")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .tracking(1.5)
-                Text("BETA")
+                Text("BETA 0.1.5")
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
                     .tracking(2)
                     .foregroundStyle(.white.opacity(0.58))
