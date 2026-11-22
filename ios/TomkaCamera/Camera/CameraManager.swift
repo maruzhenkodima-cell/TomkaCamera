@@ -684,6 +684,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setFocus(_ position: Double) {
         sessionQueue.async {
+            self.focusOperationID = UUID()
             guard let camera = self.cameraDevice,
                   camera.isFocusModeSupported(.locked) else {
                 self.publishError("Ручная фокусировка недоступна.")
@@ -755,6 +756,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     func enableAutomaticControls() {
         sessionQueue.async {
+            self.focusOperationID = UUID()
             guard let camera = self.cameraDevice else { return }
 
             do {
