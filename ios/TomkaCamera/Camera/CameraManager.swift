@@ -820,18 +820,24 @@ final class CameraManager: NSObject, ObservableObject {
                     for: camera.deviceWhiteBalanceGains
                 )
                 self.currentTemperature = Double(temperatureAndTint.temperature)
+                self.currentExposureBias = 0
+
+                // Snapshot queue-confined device values before publishing UI state.
+                let restoredISO = self.currentISO
+                let restoredFocus = self.currentFocusPosition
+                let restoredShutter = self.currentShutterPosition
+                let restoredTemperature = self.currentTemperature
 
                 DispatchQueue.main.async {
-                    self.isoValue = self.currentISO
-                    self.focusPosition = self.currentFocusPosition
-                    self.shutterPosition = self.currentShutterPosition
-                    self.colorTemperature = self.currentTemperature
+                    self.isoValue = restoredISO
+                    self.focusPosition = restoredFocus
+                    self.shutterPosition = restoredShutter
+                    self.colorTemperature = restoredTemperature
                     self.isExposureManual = false
                     self.isFocusManual = false
                     self.isWhiteBalanceManual = false
                     self.isFocusExposureLocked = false
                     self.focusIndicatorPoint = nil
-                    self.currentExposureBias = 0
                     self.exposureBias = 0
                     self.statusMessage = "Автоматические настройки включены"
                 }
