@@ -35,6 +35,7 @@ final class CameraManager: NSObject, ObservableObject {
         label: "tomka.camera.processing",
         qos: .userInitiated
     )
+    private let diagnostics = CaptureDiagnosticsStore()
     private let photoOutput = AVCapturePhotoOutput()
 
     private var cameraDevice: AVCaptureDevice?
@@ -177,6 +178,10 @@ final class CameraManager: NSObject, ObservableObject {
                 self.session.startRunning()
             }
         }
+    }
+
+    func exportDiagnostics() -> URL? {
+        diagnostics.exportJSON()
     }
 
     var shutterSpeedLabel: String {
@@ -917,6 +922,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         processingQueue.async {
+            let processingStartedAt = ProcessInfo.processInfo.systemUptime
             let result: PhotoProcessingResult
 
             do {
@@ -936,10 +942,25 @@ final class CameraManager: NSObject, ObservableObject {
                     outputData: data,
                     mergedFrameCount: 1,
                     outputScale: 1,
+                    mergeBackend: "processing-error-original",
                     usedHighResolutionUpscale: false,
                     processingDescription: "Обработка не удалась; сохранён оригинал"
                 )
             }
+
+            let processingMilliseconds = (
+                ProcessInfo.processInfo.systemUptime - processingStartedAt
+            ) * 1000
+            let diagnosticID = self.diagnostics.recordCapture(
+                inputData: frames.first,
+                rawData: rawData,
+                outputData: result.outputData,
+                requestedFrameCount: frames.count,
+                mergedFrameCount: result.mergedFrameCount,
+                processingMilliseconds: processingMilliseconds,
+                mergeBackend: result.mergeBackend,
+                outputScale: result.outputScale
+            )
 
             DispatchQueue.main.async {
                 self.originalCapturedImage = result.originalImage
@@ -964,7 +985,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.savePhotoToLibrary(
                     result.outputData,
                     rawData: rawData,
-                    successMessage: finalMessage
+                    successMessage: finalMessage,
+                    diagnosticID: diagnosticID
                 )
             }
         }
@@ -973,7 +995,8 @@ final class CameraManager: NSObject, ObservableObject {
     private func savePhotoToLibrary(
         _ data: Data,
         rawData: Data?,
-        successMessage: String
+        successMessage: String,
+        diagnosticID: UUID? = nil
     ) {
         DispatchQueue.main.async {
             self.isSavingPhoto = true
@@ -987,18 +1010,25 @@ final class CameraManager: NSObject, ObservableObject {
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
                 guard let self else { return }
                 if status == .authorized {
-                    self.performPhotoSave(data, rawData: rawData, successMessage: successMessage)
+                    self.performPhotoSave(
+                        data,
+                        rawData: rawData,
+                        successMessage: successMessage,
+                        diagnosticID: diagnosticID
+                    )
                 } else {
                     self.finishPhotoSave(
                         success: false,
-                        message: "Нет разрешения сохранять фото. Проверьте настройки приватности."
+                        message: "Нет разрешения сохранять фото. Проверьте настройки приватности.",
+                        diagnosticID: diagnosticID
                     )
                 }
             }
         default:
             finishPhotoSave(
                 success: false,
-                message: "Нет разрешения сохранять фото. Проверьте настройки приватности."
+                message: "Нет разрешения сохранять фото. Проверьте настройки приватности.",
+                diagnosticID: diagnosticID
             )
         }
     }
@@ -1006,7 +1036,8 @@ final class CameraManager: NSObject, ObservableObject {
     private func performPhotoSave(
         _ data: Data,
         rawData: Data?,
-        successMessage: String
+        successMessage: String,
+        diagnosticID: UUID? = nil
     ) {
         // PhotoKit handles ProRAW/DNG more reliably as a file-backed resource.
         // In particular, keep the .dng extension so Photos can identify the RAW container.
@@ -1022,7 +1053,8 @@ final class CameraManager: NSObject, ObservableObject {
             } catch {
                 finishPhotoSave(
                     success: false,
-                    message: "Не удалось подготовить ProRAW-файл: \(error.localizedDescription)"
+                    message: "Не удалось подготовить ProRAW-файл: \(error.localizedDescription)",
+                    diagnosticID: diagnosticID
                 )
                 return
             }
@@ -1061,21 +1093,35 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             if success {
-                self?.finishPhotoSave(success: true, message: successMessage)
+                self?.finishPhotoSave(
+                    success: true,
+                    message: successMessage,
+                    diagnosticID: diagnosticID
+                )
             } else if let error {
                 let nsError = error as NSError
                 let details = "\(nsError.localizedDescription) (\(nsError.domain), code \(nsError.code))"
-                self?.finishPhotoSave(success: false, message: details)
+                self?.finishPhotoSave(
+                    success: false,
+                    message: details,
+                    diagnosticID: diagnosticID
+                )
             } else {
                 self?.finishPhotoSave(
                     success: false,
-                    message: "Не удалось сохранить снимок в медиатеку."
+                    message: "Не удалось сохранить снимок в медиатеку.",
+                    diagnosticID: diagnosticID
                 )
             }
         }
     }
 
-    private func finishPhotoSave(success: Bool, message: String) {
+    private func finishPhotoSave(
+        success: Bool,
+        message: String,
+        diagnosticID: UUID? = nil
+    ) {
+        diagnostics.recordSave(id: diagnosticID, success: success, message: message)
         DispatchQueue.main.async {
             self.isSavingPhoto = false
             self.statusMessage = success ? message : nil
