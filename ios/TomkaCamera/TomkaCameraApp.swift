@@ -24,10 +24,17 @@ struct ContentView: View {
     private let zoomPresets: [CGFloat] = [1.0, 2.0, 3.0]
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            cameraScreen
+        GeometryReader { geometry in
+            ZStack {
+                Color.black
+                cameraScreen(
+                    topInset: geometry.safeAreaInsets.top,
+                    bottomInset: geometry.safeAreaInsets.bottom
+                )
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
+        .ignoresSafeArea()
         .preferredColorScheme(.dark)
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
@@ -52,18 +59,19 @@ struct ContentView: View {
         }
     }
 
-    private var cameraScreen: some View {
-        ZStack {
+    private func cameraScreen(topInset: CGFloat, bottomInset: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
             if camera.isAuthorized {
                 CameraPreview(session: camera.session) { devicePoint, displayPoint in
                     camera.focus(at: devicePoint, displayPoint: displayPoint)
                 }
-                .ignoresSafeArea()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.black)
 
                 if camera.showCompositionGrid {
                     CompositionGrid()
                         .stroke(.white.opacity(0.42), lineWidth: 0.7)
-                        .ignoresSafeArea()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .allowsHitTesting(false)
                 }
 
@@ -77,13 +85,22 @@ struct ContentView: View {
                             .allowsHitTesting(false)
                     }
                 }
-                .ignoresSafeArea()
                 .allowsHitTesting(false)
             } else {
                 Text("Ожидание доступа к камере…")
                     .font(.subheadline)
                     .foregroundStyle(.white.opacity(0.8))
             }
+
+            // A full-width gradient is a separate layer, not the width of the padded controls.
+            LinearGradient(
+                colors: [.clear, .black.opacity(0.58), .black.opacity(0.92)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(maxWidth: .infinity)
+            .frame(height: 290)
+            .allowsHitTesting(false)
 
             VStack(spacing: 0) {
                 topBar
@@ -105,8 +122,13 @@ struct ContentView: View {
                 bottomControls
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.top, max(topInset, 48) + 8)
+            .padding(.bottom, max(bottomInset, 24) + 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black)
+        .clipped()
     }
 
     private var topBar: some View {
@@ -276,14 +298,6 @@ struct ContentView: View {
         .padding(.horizontal, 8)
         .padding(.top, 12)
         .padding(.bottom, 10)
-        .background(
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.72), .black.opacity(0.9)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea(edges: .bottom)
-        )
     }
 }
 
