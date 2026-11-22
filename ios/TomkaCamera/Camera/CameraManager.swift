@@ -35,9 +35,12 @@ final class CameraManager: NSObject, ObservableObject {
         label: "tomka.camera.processing",
         qos: .userInitiated
     )
+    private let diagnostics = CaptureDiagnosticsStore()
     private let photoOutput = AVCapturePhotoOutput()
 
     private var cameraDevice: AVCaptureDevice?
+    // Stored without an availability annotation; cast only inside an iOS 17+ check.
+    private var rotationCoordinator: AnyObject?
     private var burstPhotoDimensions: CMVideoDimensions?
     private var isConfigured = false
     private var captureDelegates: [Int64: PhotoFrameCaptureDelegate] = [:]
@@ -84,7 +87,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var showCompositionGrid = true
     @Published var focusIndicatorPoint: CGPoint?
     @Published var zoomFactor: CGFloat = 1.0
-    @Published var maxZoomFactor: CGFloat = 10.0
+    @Published var maxZoomFactor: CGFloat = 15.0
 
     @Published var isoValue: Double = 100
     @Published var minISO: Double = 25
@@ -102,12 +105,33 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isFocusManual = false
     @Published var isWhiteBalanceManual = false
 
+    // Keep capture modes mutually exclusive and update the UI state immediately.
+    func setMultiFrameEnabled(_ enabled: Bool) {
+        multiFrameEnabled = enabled && !useProRAW && flashMode == .off
+    }
+
+    func setProRAWEnabled(_ enabled: Bool) {
+        useProRAW = enabled && proRAWAvailable
+        if useProRAW {
+            multiFrameEnabled = false
+        }
+    }
+
+    func setFlashMode(_ mode: CameraFlashMode) {
+        flashMode = mode
+        if mode != .off {
+            multiFrameEnabled = false
+        }
+    }
+
     override init() {
         super.init()
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         installSessionObservers()
     }
 
     deinit {
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
         sessionObservers.forEach(NotificationCenter.default.removeObserver)
         let captureSession = session
         let queue = sessionQueue
@@ -177,6 +201,10 @@ final class CameraManager: NSObject, ObservableObject {
                 self.session.startRunning()
             }
         }
+    }
+
+    func exportDiagnostics() -> URL? {
+        diagnostics.exportJSON()
     }
 
     var shutterSpeedLabel: String {
@@ -296,10 +324,16 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 self.cameraDevice = camera
+                if #available(iOS 17.0, *) {
+                    self.rotationCoordinator = AVCaptureDevice.RotationCoordinator(
+                        device: camera,
+                        previewLayer: nil
+                    )
+                }
                 self.currentISO = Double(camera.iso)
                 self.currentFocusPosition = Double(camera.lensPosition)
 
-                let supportedZoom = min(CGFloat(10.0), camera.activeFormat.videoMaxZoomFactor)
+                let supportedZoom = min(CGFloat(15.0), camera.activeFormat.videoMaxZoomFactor)
                 let minimumISO = Double(camera.activeFormat.minISO)
                 let maximumISO = Double(camera.activeFormat.maxISO)
 
@@ -376,7 +410,7 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async {
             guard let camera = self.cameraDevice else { return }
 
-            let deviceMaximum = min(CGFloat(10.0), camera.activeFormat.videoMaxZoomFactor)
+            let deviceMaximum = min(CGFloat(15.0), camera.activeFormat.videoMaxZoomFactor)
             let clampedFactor = max(1.0, min(factor, deviceMaximum))
 
             do {
@@ -533,7 +567,9 @@ final class CameraManager: NSObject, ObservableObject {
                     }
                 }
 
-                if !self.isExposureManual && camera.isExposurePointOfInterestSupported {
+                if camera.exposureMode != .custom &&
+                    camera.exposureMode != .locked &&
+                    camera.isExposurePointOfInterestSupported {
                     camera.exposurePointOfInterest = point
                     if camera.isExposureModeSupported(.continuousAutoExposure) {
                         camera.exposureMode = .continuousAutoExposure
@@ -898,7 +934,33 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         captureDelegates[identifier] = delegate
+        updatePhotoOutputRotation()
         photoOutput.capturePhoto(with: settings, delegate: delegate)
+    }
+
+    private func updatePhotoOutputRotation() {
+        guard let connection = photoOutput.connection(with: .video) else { return }
+
+        if #available(iOS 17.0, *),
+           let coordinator = rotationCoordinator as? AVCaptureDevice.RotationCoordinator {
+            let angle = coordinator.videoRotationAngleForHorizonLevelCapture
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+            }
+            return
+        }
+
+        guard connection.isVideoOrientationSupported else { return }
+        switch UIDevice.current.orientation {
+        case .landscapeLeft:
+            connection.videoOrientation = .landscapeRight
+        case .landscapeRight:
+            connection.videoOrientation = .landscapeLeft
+        case .portraitUpsideDown:
+            connection.videoOrientation = .portraitUpsideDown
+        default:
+            connection.videoOrientation = .portrait
+        }
     }
 
     private func processCapturedFrames(_ frames: [Data], rawData: Data?) {
@@ -917,6 +979,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         processingQueue.async {
+            let processingStartedAt = ProcessInfo.processInfo.systemUptime
             let result: PhotoProcessingResult
 
             do {
@@ -936,10 +999,25 @@ final class CameraManager: NSObject, ObservableObject {
                     outputData: data,
                     mergedFrameCount: 1,
                     outputScale: 1,
+                    mergeBackend: "processing-error-original",
                     usedHighResolutionUpscale: false,
                     processingDescription: "Обработка не удалась; сохранён оригинал"
                 )
             }
+
+            let processingMilliseconds = (
+                ProcessInfo.processInfo.systemUptime - processingStartedAt
+            ) * 1000
+            let diagnosticID = self.diagnostics.recordCapture(
+                inputData: frames.first,
+                rawData: rawData,
+                outputData: result.outputData,
+                requestedFrameCount: frames.count,
+                mergedFrameCount: result.mergedFrameCount,
+                processingMilliseconds: processingMilliseconds,
+                mergeBackend: result.mergeBackend,
+                outputScale: result.outputScale
+            )
 
             DispatchQueue.main.async {
                 self.originalCapturedImage = result.originalImage
@@ -964,7 +1042,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.savePhotoToLibrary(
                     result.outputData,
                     rawData: rawData,
-                    successMessage: finalMessage
+                    successMessage: finalMessage,
+                    diagnosticID: diagnosticID
                 )
             }
         }
@@ -973,7 +1052,8 @@ final class CameraManager: NSObject, ObservableObject {
     private func savePhotoToLibrary(
         _ data: Data,
         rawData: Data?,
-        successMessage: String
+        successMessage: String,
+        diagnosticID: UUID? = nil
     ) {
         DispatchQueue.main.async {
             self.isSavingPhoto = true
@@ -982,23 +1062,35 @@ final class CameraManager: NSObject, ObservableObject {
 
         switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized:
-            performPhotoSave(data, rawData: rawData, successMessage: successMessage)
+            performPhotoSave(
+                data,
+                rawData: rawData,
+                successMessage: successMessage,
+                diagnosticID: diagnosticID
+            )
         case .notDetermined:
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
                 guard let self else { return }
                 if status == .authorized {
-                    self.performPhotoSave(data, rawData: rawData, successMessage: successMessage)
+                    self.performPhotoSave(
+                        data,
+                        rawData: rawData,
+                        successMessage: successMessage,
+                        diagnosticID: diagnosticID
+                    )
                 } else {
                     self.finishPhotoSave(
                         success: false,
-                        message: "Нет разрешения сохранять фото. Проверьте настройки приватности."
+                        message: "Нет разрешения сохранять фото. Проверьте настройки приватности.",
+                        diagnosticID: diagnosticID
                     )
                 }
             }
         default:
             finishPhotoSave(
                 success: false,
-                message: "Нет разрешения сохранять фото. Проверьте настройки приватности."
+                message: "Нет разрешения сохранять фото. Проверьте настройки приватности.",
+                diagnosticID: diagnosticID
             )
         }
     }
@@ -1006,7 +1098,8 @@ final class CameraManager: NSObject, ObservableObject {
     private func performPhotoSave(
         _ data: Data,
         rawData: Data?,
-        successMessage: String
+        successMessage: String,
+        diagnosticID: UUID? = nil
     ) {
         // PhotoKit handles ProRAW/DNG more reliably as a file-backed resource.
         // In particular, keep the .dng extension so Photos can identify the RAW container.
@@ -1022,7 +1115,8 @@ final class CameraManager: NSObject, ObservableObject {
             } catch {
                 finishPhotoSave(
                     success: false,
-                    message: "Не удалось подготовить ProRAW-файл: \(error.localizedDescription)"
+                    message: "Не удалось подготовить ProRAW-файл: \(error.localizedDescription)",
+                    diagnosticID: diagnosticID
                 )
                 return
             }
@@ -1061,21 +1155,35 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             if success {
-                self?.finishPhotoSave(success: true, message: successMessage)
+                self?.finishPhotoSave(
+                    success: true,
+                    message: successMessage,
+                    diagnosticID: diagnosticID
+                )
             } else if let error {
                 let nsError = error as NSError
                 let details = "\(nsError.localizedDescription) (\(nsError.domain), code \(nsError.code))"
-                self?.finishPhotoSave(success: false, message: details)
+                self?.finishPhotoSave(
+                    success: false,
+                    message: details,
+                    diagnosticID: diagnosticID
+                )
             } else {
                 self?.finishPhotoSave(
                     success: false,
-                    message: "Не удалось сохранить снимок в медиатеку."
+                    message: "Не удалось сохранить снимок в медиатеку.",
+                    diagnosticID: diagnosticID
                 )
             }
         }
     }
 
-    private func finishPhotoSave(success: Bool, message: String) {
+    private func finishPhotoSave(
+        success: Bool,
+        message: String,
+        diagnosticID: UUID? = nil
+    ) {
+        diagnostics.recordSave(id: diagnosticID, success: success, message: message)
         DispatchQueue.main.async {
             self.isSavingPhoto = false
             self.statusMessage = success ? message : nil

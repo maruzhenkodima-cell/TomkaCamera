@@ -8,7 +8,7 @@ struct TomkaCameraApp: App {
             // ContentView also ignores safe areas, but applying it here ensures the
             // hosting root receives the full window proposal, not only the safe-area box.
             GeometryReader { geometry in
-                ContentView(screenSize: geometry.size)
+                ContentView()
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .ignoresSafeArea(.all, edges: .all)
             }
@@ -25,26 +25,37 @@ private enum CameraSheet: String, Identifiable {
 }
 
 struct ContentView: View {
-    let screenSize: CGSize
-
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraManager()
     @State private var activeSheet: CameraSheet?
+    @State private var pinchStartZoom: CGFloat = 1
+    @State private var isPinching = false
 
-    private let zoomPresets: [CGFloat] = [1.0, 2.0, 3.0]
+    private let zoomPresets: [CGFloat] = [1, 2, 3, 5, 10, 15]
 
     var body: some View {
         ZStack {
-            // Only the visual background ignores safe areas.
-            // The controls stay in the safe area; the camera image fills the physical display.
-            Color.black
-                .ignoresSafeArea()
+            Color.black.ignoresSafeArea()
 
             if camera.isAuthorized {
                 CameraPreview(session: camera.session) { devicePoint, displayPoint in
                     camera.focus(at: devicePoint, displayPoint: displayPoint)
                 }
                 .ignoresSafeArea()
+                .simultaneousGesture(
+                    MagnificationGesture()
+                        .onChanged { magnification in
+                            if !isPinching {
+                                pinchStartZoom = camera.zoomFactor
+                                isPinching = true
+                            }
+                            camera.setZoom(pinchStartZoom * magnification)
+                        }
+                        .onEnded { magnification in
+                            camera.setZoom(pinchStartZoom * magnification)
+                            isPinching = false
+                        }
+                )
                 .zIndex(0)
 
                 if camera.showCompositionGrid {
@@ -69,24 +80,26 @@ struct ContentView: View {
                 .allowsHitTesting(false)
                 .zIndex(2)
             } else {
-                Text("Ожидание доступа к камере…")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.8))
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    Text("Ожидание доступа к камере…")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.8))
+                }
             }
 
-            // Full-width fade sits behind the controls and extends to the bottom screen edge.
             LinearGradient(
                 stops: [
                     .init(color: .clear, location: 0),
-                    .init(color: .black.opacity(0.18), location: 0.28),
-                    .init(color: .black.opacity(0.72), location: 0.72),
+                    .init(color: .black.opacity(0.10), location: 0.28),
+                    .init(color: .black.opacity(0.68), location: 0.72),
                     .init(color: .black.opacity(0.94), location: 1)
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
             .frame(maxWidth: .infinity)
-            .frame(height: 300)
+            .frame(height: 330)
             .ignoresSafeArea(edges: .bottom)
             .frame(maxHeight: .infinity, alignment: .bottom)
             .allowsHitTesting(false)
@@ -95,32 +108,28 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 topBar
 
-                Spacer(minLength: 16)
+                Spacer(minLength: 20)
 
                 if let message = camera.errorMessage ?? camera.statusMessage {
                     Text(message)
-                        .font(.footnote)
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(camera.errorMessage == nil ? .white : .red)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(.black.opacity(0.68), in: Capsule())
-                        .padding(.bottom, 10)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .cameraChromeGlass(in: Capsule())
+                        .padding(.bottom, 14)
                 }
 
                 bottomControls
             }
             .padding(.horizontal, 16)
-            // ContentView now truly occupies the complete display; keep controls clear
-            // of the iPhone 14 Pro Dynamic Island and home-indicator gesture region.
             .padding(.top, 58)
             .padding(.bottom, 28)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .zIndex(4)
         }
-        // Expand the ROOT SwiftUI view itself into the iPhone safe-area regions.
-        // Expanding only CameraPreview leaves the root container letterboxed to the safe area.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .ignoresSafeArea(.all, edges: .all)
         .background(Color.black.ignoresSafeArea())
@@ -148,48 +157,84 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var topBar: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("TOMKA CAMERA")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .tracking(1.5)
-                Text("BETA 0.1.5 · \(Int(screenSize.width))×\(Int(screenSize.height)) pt")
-                    .font(.system(size: 8, weight: .semibold, design: .rounded))
-                    .tracking(2)
-                    .foregroundStyle(.white.opacity(0.58))
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 6) {
+                topBarControls
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-
-            Spacer()
-
-            Button(action: cycleFlashMode) {
-                VStack(spacing: 2) {
-                    Image(systemName: flashSymbol)
-                        .font(.system(size: 17, weight: .semibold))
-                    Text(camera.flashMode.title)
-                        .font(.system(size: 9, weight: .semibold))
-                }
-                .frame(width: 48, height: 42)
-                .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Вспышка: \(camera.flashMode.title)")
-
-            Button {
-                camera.showCompositionGrid.toggle()
-            } label: {
-                Image(systemName: camera.showCompositionGrid ? "grid" : "grid")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 42, height: 42)
-                    .background(
-                        camera.showCompositionGrid ? .white.opacity(0.24) : .black.opacity(0.42),
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Переключить сетку")
+        } else {
+            topBarControls
+                .frame(maxWidth: .infinity, alignment: .center)
         }
-        .foregroundStyle(.white)
+    }
+
+    private var topBarControls: some View {
+        HStack(spacing: 6) {
+            chromeButton(
+                symbol: flashSymbol,
+                title: flashShortTitle,
+                isActive: camera.flashMode != .off,
+                isDisabled: !camera.hasFlash
+            ) {
+                cycleFlashMode()
+            }
+
+            chromeButton(
+                symbol: camera.showCompositionGrid ? "grid" : "square.grid.3x3",
+                title: "СЕТКА",
+                isActive: camera.showCompositionGrid
+            ) {
+                camera.showCompositionGrid.toggle()
+            }
+
+            chromeButton(
+                symbol: "camera.aperture",
+                title: "RAW",
+                isActive: camera.useProRAW,
+                isDisabled: !camera.proRAWAvailable
+            ) {
+                camera.setProRAWEnabled(!camera.useProRAW)
+            }
+
+            chromeButton(
+                symbol: "square.stack.3d.up",
+                title: "3 КАДРА",
+                isActive: camera.multiFrameEnabled,
+                isDisabled: camera.useProRAW || camera.flashMode != .off
+            ) {
+                camera.setMultiFrameEnabled(!camera.multiFrameEnabled)
+            }
+        }
+        .padding(5)
+        .cameraChromeGlass(in: Capsule())
+    }
+
+    private func chromeButton(
+        symbol: String,
+        title: String,
+        isActive: Bool = false,
+        isDisabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                    .tracking(0.3)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isActive ? Color.yellow : Color.white)
+            .frame(width: 52, height: 43)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.36 : 1)
+        .accessibilityLabel(title)
     }
 
     private var flashSymbol: String {
@@ -200,56 +245,26 @@ struct ContentView: View {
         }
     }
 
+    private var flashShortTitle: String {
+        switch camera.flashMode {
+        case .off: return "ВЫКЛ"
+        case .auto: return "АВТО"
+        case .on: return "ВКЛ"
+        }
+    }
+
     private func cycleFlashMode() {
         let modes = camera.availableFlashModes
         guard !modes.isEmpty else { return }
         let currentIndex = modes.firstIndex(of: camera.flashMode) ?? 0
-        camera.flashMode = modes[(currentIndex + 1) % modes.count]
+        camera.setFlashMode(modes[(currentIndex + 1) % modes.count])
     }
 
     private var bottomControls: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 12) {
-                ForEach(zoomPresets, id: \.self) { preset in
-                    Button {
-                        camera.setZoom(preset)
-                    } label: {
-                        Text(preset == 1 ? "1×" : String(format: "%.0f×", Double(preset)))
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .frame(minWidth: 48, minHeight: 34)
-                            .background(
-                                abs(camera.zoomFactor - preset) < 0.05
-                                    ? Color.white.opacity(0.3)
-                                    : Color.white.opacity(0.12),
-                                in: Capsule()
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!camera.isAuthorized || camera.maxZoomFactor < preset)
-                    .opacity(camera.maxZoomFactor < preset ? 0.35 : 1)
-                }
+        VStack(spacing: 17) {
+            zoomControls
 
-                Spacer(minLength: 8)
-
-                Text(String(format: "%.1f×", Double(camera.zoomFactor)))
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.white.opacity(0.9))
-            }
-
-            Slider(
-                value: Binding(
-                    get: { camera.zoomFactor },
-                    set: { camera.setZoom($0) }
-                ),
-                in: 1.0...max(1.0, camera.maxZoomFactor)
-            )
-            .tint(.white)
-            .disabled(!camera.isAuthorized || camera.maxZoomFactor <= 1.0)
-            .frame(height: 18)
-
-            HStack {
+            HStack(alignment: .center, spacing: 0) {
                 Button {
                     activeSheet = .photoReview
                 } label: {
@@ -260,23 +275,22 @@ struct ContentView: View {
                                 .scaledToFill()
                         } else {
                             Image(systemName: "photo")
-                                .font(.system(size: 20, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.75))
+                                .font(.system(size: 21, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.8))
                         }
                     }
-                    .frame(width: 52, height: 52)
-                    .clipShape(RoundedRectangle(cornerRadius: 11))
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 11)
-                            .stroke(.white.opacity(0.6), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(.white.opacity(0.72), lineWidth: 1)
                     )
                 }
                 .buttonStyle(.plain)
                 .disabled(camera.capturedImage == nil)
-                .opacity(camera.capturedImage == nil ? 0.55 : 1)
-                .accessibilityLabel("Посмотреть последний снимок")
-
-                Spacer()
+                .opacity(camera.capturedImage == nil ? 0.58 : 1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("Последняя фотография")
 
                 Button {
                     camera.takePhoto()
@@ -284,56 +298,160 @@ struct ContentView: View {
                     ZStack {
                         Circle()
                             .fill(.white)
-                            .frame(width: 76, height: 76)
+                            .frame(width: 78, height: 78)
                         Circle()
-                            .stroke(.gray.opacity(0.8), lineWidth: 4)
-                            .frame(width: 66, height: 66)
+                            .stroke(.white.opacity(0.78), lineWidth: 2)
+                            .frame(width: 68, height: 68)
                         if camera.isCapturing {
                             ProgressView()
                                 .tint(.black)
+                                .scaleEffect(1.1)
                         }
                     }
+                    .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
                 }
                 .buttonStyle(.plain)
                 .disabled(!camera.isAuthorized || camera.isCapturing)
                 .accessibilityLabel("Сделать фотографию")
-
-                Spacer()
 
                 Button {
                     activeSheet = .settings
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 20, weight: .semibold))
-                        .frame(width: 52, height: 52)
-                        .background(.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 12))
+                        .foregroundStyle(.white)
+                        .frame(width: 48, height: 48)
+                        .cameraChromeGlass(in: Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Настройки камеры")
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .accessibilityLabel("Настройки съёмки")
+            }
+
+            Text(captureModeLabel)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .tracking(1.8)
+                .foregroundStyle(.white.opacity(0.78))
+        }
+        .padding(.horizontal, 5)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+
+    private var captureModeLabel: String {
+        if camera.useProRAW { return "APPLE PRORAW · DNG" }
+        if camera.multiFrameEnabled { return "СЕРИЯ · 3 КАДРА" }
+        return "ФОТО"
+    }
+
+    private var zoomControls: some View {
+        VStack(spacing: 9) {
+            zoomPresetRow
+
+            HStack(spacing: 10) {
+                Slider(
+                    value: Binding(
+                        get: { Double(camera.zoomFactor) },
+                        set: { camera.setZoom(CGFloat($0)) }
+                    ),
+                    in: 1.0...Double(max(1.0, camera.maxZoomFactor))
+                )
+                .tint(.white)
+                .disabled(!camera.isAuthorized || camera.maxZoomFactor <= 1.0)
+
+                Text(String(format: "%.1f×", Double(camera.zoomFactor)))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .frame(width: 43, alignment: .trailing)
+            }
+            .padding(.horizontal, 15)
+            .padding(.vertical, 5)
+            .cameraChromeGlass(in: Capsule())
+        }
+    }
+
+    @ViewBuilder
+    private var zoomPresetRow: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 5) {
+                zoomPresetButtons
+            }
+        } else {
+            zoomPresetButtons
+        }
+    }
+
+    private var zoomPresetButtons: some View {
+        HStack(spacing: 5) {
+            ForEach(zoomPresets, id: \.self) { preset in
+                let selected = abs(camera.zoomFactor - preset) < 0.08
+                Button {
+                    camera.setZoom(preset)
+                } label: {
+                    Text(String(format: "%.0f×", Double(preset)))
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(selected ? Color.black : Color.white)
+                        .frame(width: 43, height: 36)
+                        .background(
+                            selected ? Color.white : Color.clear,
+                            in: Capsule()
+                        )
+                        .cameraChromeGlass(in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(!camera.isAuthorized || camera.maxZoomFactor + 0.01 < preset)
+                .opacity(camera.maxZoomFactor + 0.01 < preset ? 0.34 : 1)
+                .accessibilityLabel("Увеличение \(Int(preset))×")
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func cameraChromeGlass<S: Shape>(in shape: S) -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(.regular.interactive(), in: shape)
+        } else {
+            self
+                .background(.ultraThinMaterial, in: shape)
+                .overlay(shape.stroke(.white.opacity(0.16), lineWidth: 0.7))
+        }
     }
 }
 
 private struct CameraSettingsView: View {
     @ObservedObject var camera: CameraManager
     let onDismiss: () -> Void
+    @State private var diagnosticsURL: URL?
+    @State private var diagnosticsError: String?
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Съёмка") {
-                    Picker("Вспышка", selection: $camera.flashMode) {
+                    Picker(
+                        "Вспышка",
+                        selection: Binding(
+                            get: { camera.flashMode },
+                            set: { camera.setFlashMode($0) }
+                        )
+                    ) {
                         ForEach(camera.availableFlashModes) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
 
-                    Toggle("Серия из 3 кадров", isOn: $camera.multiFrameEnabled)
-                        .disabled(camera.useProRAW || camera.flashMode != .off)
+                    Toggle(
+                        "Серия из 3 кадров",
+                        isOn: Binding(
+                            get: { camera.multiFrameEnabled },
+                            set: { camera.setMultiFrameEnabled($0) }
+                        )
+                    )
+                    .disabled(camera.useProRAW || camera.flashMode != .off)
 
                     if camera.flashMode != .off {
                         Text("Серия временно недоступна со вспышкой: для стабильного совмещения трёх кадров нужна одинаковая подсветка.")
@@ -345,8 +463,14 @@ private struct CameraSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Toggle("Apple ProRAW (DNG)", isOn: $camera.useProRAW)
-                        .disabled(!camera.proRAWAvailable)
+                    Toggle(
+                        "Apple ProRAW (DNG)",
+                        isOn: Binding(
+                            get: { camera.useProRAW },
+                            set: { camera.setProRAWEnabled($0) }
+                        )
+                    )
+                    .disabled(!camera.proRAWAvailable)
 
                     if !camera.proRAWAvailable {
                         Text("ProRAW недоступен в текущей конфигурации камеры.")
@@ -355,6 +479,31 @@ private struct CameraSettingsView: View {
                     }
 
                     Toggle("Сетка третей", isOn: $camera.showCompositionGrid)
+                }
+
+                Section("Диагностика") {
+                    Text("Технический JSON-отчёт о последних 100 снимках. Фотографии и GPS-координаты в отчёт не включаются.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Подготовить отчёт JSON") {
+                        diagnosticsURL = camera.exportDiagnostics()
+                        diagnosticsError = diagnosticsURL == nil
+                            ? "Не удалось сформировать отчёт."
+                            : nil
+                    }
+
+                    if let diagnosticsURL {
+                        ShareLink(item: diagnosticsURL) {
+                            Label("Поделиться отчётом", systemImage: "square.and.arrow.up")
+                        }
+                    }
+
+                    if let diagnosticsError {
+                        Text(diagnosticsError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 Section("Экспозиция") {
