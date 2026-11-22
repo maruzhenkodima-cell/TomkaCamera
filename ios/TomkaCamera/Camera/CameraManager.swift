@@ -538,7 +538,9 @@ final class CameraManager: NSObject, ObservableObject {
                     }
                 }
 
-                if !self.isExposureManual && camera.isExposurePointOfInterestSupported {
+                if camera.exposureMode != .custom &&
+                    camera.exposureMode != .locked &&
+                    camera.isExposurePointOfInterestSupported {
                     camera.exposurePointOfInterest = point
                     if camera.isExposureModeSupported(.continuousAutoExposure) {
                         camera.exposureMode = .continuousAutoExposure
@@ -1005,7 +1007,12 @@ final class CameraManager: NSObject, ObservableObject {
 
         switch PHPhotoLibrary.authorizationStatus(for: .addOnly) {
         case .authorized:
-            performPhotoSave(data, rawData: rawData, successMessage: successMessage)
+            performPhotoSave(
+                data,
+                rawData: rawData,
+                successMessage: successMessage,
+                diagnosticID: diagnosticID
+            )
         case .notDetermined:
             PHPhotoLibrary.requestAuthorization(for: .addOnly) { [weak self] status in
                 guard let self else { return }
