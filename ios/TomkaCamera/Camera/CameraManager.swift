@@ -333,6 +333,9 @@ final class CameraManager: NSObject, ObservableObject {
                 if camera.isFocusModeSupported(.continuousAutoFocus) {
                     camera.focusMode = .continuousAutoFocus
                 }
+                if camera.isSmoothAutoFocusSupported {
+                    camera.isSmoothAutoFocusEnabled = true
+                }
                 if camera.isExposureModeSupported(.continuousAutoExposure) {
                     camera.exposureMode = .continuousAutoExposure
                 }
@@ -622,51 +625,13 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 if lockAfterFocus {
-                    self.sessionQueue.asyncAfter(deadline: .now() + 0.75) { [weak self] in
-                        guard let self,
-                              self.focusOperationID == operationID,
-                              let activeCamera = self.cameraDevice else { return }
-
-                        do {
-                            try activeCamera.lockForConfiguration()
-
-                            var focusLocked = false
-                            if activeCamera.isFocusModeSupported(.locked) {
-                                activeCamera.setFocusModeLocked(
-                                    lensPosition: activeCamera.lensPosition,
-                                    completionHandler: nil
-                                )
-                                focusLocked = true
-                            }
-
-                            var exposureLocked = false
-                            if activeCamera.exposureMode != .custom &&
-                                activeCamera.isExposureModeSupported(.locked) {
-                                activeCamera.exposureMode = .locked
-                                exposureLocked = true
-                            }
-
-                            activeCamera.unlockForConfiguration()
-
-                            guard focusLocked || exposureLocked else {
-                                self.publishError("Эта камера не поддерживает фиксацию фокуса и экспозиции.")
-                                return
-                            }
-
-                            let lockedFocusPosition = Double(activeCamera.lensPosition)
-                            self.currentFocusPosition = lockedFocusPosition
-                            let exposureIsManual = activeCamera.exposureMode == .custom
-                            DispatchQueue.main.async {
-                                self.isFocusExposureLocked = true
-                                self.isFocusManual = focusLocked
-                                self.focusPosition = lockedFocusPosition
-                                self.statusMessage = exposureIsManual
-                                    ? "AF LOCK · ручная экспозиция"
-                                    : "AE/AF LOCK"
-                            }
-                        } catch {
-                            self.publishError("Не удалось зафиксировать фокус и экспозицию: \(error.localizedDescription)")
-                        }
+                    self.sessionQueue.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                        guard let self else { return }
+                        self.finishFocusAndExposureLock(
+                            for: camera,
+                            operationID: operationID,
+                            attemptsRemaining: 8
+                        )
                     }
                 } else {
                     self.sessionQueue.asyncAfter(deadline: .now() + 1.7) { [weak self] in
@@ -676,6 +641,10 @@ final class CameraManager: NSObject, ObservableObject {
                             guard !self.isFocusExposureLocked,
                                   self.focusIndicatorPoint == displayPoint else { return }
                             self.focusIndicatorPoint = nil
+                            if self.statusMessage == "Автофокусировка" ||
+                                self.statusMessage == "Автофокус и автоэкспозиция" {
+                                self.statusMessage = nil
+                            }
                         }
                     }
                 }
@@ -684,6 +653,71 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
     }
+
+    private func finishFocusAndExposureLock(
+        for camera: AVCaptureDevice,
+        operationID: UUID,
+        attemptsRemaining: Int
+    ) {
+        guard focusOperationID == operationID,
+              cameraDevice === camera else { return }
+
+        // Let the autofocus/exposure systems finish their first adjustment before
+        // sampling the lens position and locking the device.
+        if attemptsRemaining > 0 &&
+            (camera.isAdjustingFocus || camera.isAdjustingExposure) {
+            sessionQueue.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                self?.finishFocusAndExposureLock(
+                    for: camera,
+                    operationID: operationID,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
+            }
+            return
+        }
+
+        do {
+            try camera.lockForConfiguration()
+
+            var focusLocked = false
+            if camera.isFocusModeSupported(.locked) {
+                camera.setFocusModeLocked(
+                    lensPosition: camera.lensPosition,
+                    completionHandler: nil
+                )
+                focusLocked = true
+            }
+
+            var exposureLocked = false
+            if camera.exposureMode != .custom &&
+                camera.isExposureModeSupported(.locked) {
+                camera.exposureMode = .locked
+                exposureLocked = true
+            }
+
+            camera.unlockForConfiguration()
+
+            guard focusLocked || exposureLocked else {
+                publishError("Эта камера не поддерживает фиксацию фокуса и экспозиции.")
+                return
+            }
+
+            let lockedFocusPosition = Double(camera.lensPosition)
+            currentFocusPosition = lockedFocusPosition
+            let exposureIsManual = camera.exposureMode == .custom
+            DispatchQueue.main.async {
+                self.isFocusExposureLocked = true
+                self.isFocusManual = focusLocked
+                self.focusPosition = lockedFocusPosition
+                self.statusMessage = exposureIsManual
+                    ? "AF LOCK · ручная экспозиция"
+                    : "AE/AF LOCK"
+            }
+        } catch {
+            publishError("Не удалось зафиксировать фокус и экспозицию: \\(error.localizedDescription)")
+        }
+    }
+
 
     func setFocus(_ position: Double) {
         sessionQueue.async {
