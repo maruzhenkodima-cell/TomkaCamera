@@ -1,4 +1,4 @@
-# Tomka Camera — первая бета 0.1.0
+# Tomka Camera — первая бета 0.1.1
 
 Нативное приложение камеры для iPhone на SwiftUI и AVFoundation. Основная цель проекта — дать ручное управление основной камерой iPhone и экспериментировать с обработкой серии кадров.
 
@@ -24,8 +24,8 @@
 
 1. Открой вкладку **Actions** репозитория.
 2. Выбери последний успешный запуск **Build TomkaCamera Beta**.
-3. Внизу страницы скачай артефакт **TomkaCamera-beta-0.1.0-unsigned-IPA**.
-4. Распакуй скачанный ZIP. Внутри будет файл `TomkaCamera-beta-0.1.0-unsigned.ipa`.
+3. Внизу страницы скачай артефакт **TomkaCamera-beta-0.1.1-unsigned-IPA**.
+4. Распакуй скачанный ZIP. Внутри будет файл `TomkaCamera-beta-0.1.1-unsigned.ipa`.
 
 ## Установка на iPhone с Windows
 
