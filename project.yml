@@ -53,8 +53,9 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"
         IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         INFOPLIST_KEY_CFBundleDisplayName: "Tomka Camera Beta"
-        MARKETING_VERSION: "0.1.5"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "0.1.6"
+        CURRENT_PROJECT_VERSION: "7"
         INFOPLIST_KEY_NSCameraUsageDescription: "Tomka Camera needs camera access to capture photos."
         INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "Tomka Camera needs permission to save photos to your library."
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         GENERATE_INFOPLIST_FILE: YES
