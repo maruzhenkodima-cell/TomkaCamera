@@ -1031,7 +1031,7 @@ final class CameraManager: NSObject, ObservableObject {
                 // Store the DNG as the main/original resource using a file URL.
                 let rawOptions = PHAssetResourceCreationOptions()
                 rawOptions.originalFilename = rawFileURL.lastPathComponent
-                rawOptions.contentType = UTType.dng
+                rawOptions.uniformTypeIdentifier = UTType.dng.identifier
                 rawOptions.shouldMoveFile = true
                 request.addResource(
                     with: .photo,
@@ -1042,7 +1042,7 @@ final class CameraManager: NSObject, ObservableObject {
                 // Keep the rendered JPEG as the paired alternate resource.
                 let renderedOptions = PHAssetResourceCreationOptions()
                 renderedOptions.originalFilename = "TomkaCamera.jpg"
-                renderedOptions.contentType = UTType.jpeg
+                renderedOptions.uniformTypeIdentifier = UTType.jpeg.identifier
                 request.addResource(
                     with: .alternatePhoto,
                     data: data,
