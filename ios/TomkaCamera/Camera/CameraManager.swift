@@ -607,11 +607,12 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 camera.unlockForConfiguration()
+                let focusedPosition = Double(camera.lensPosition)
 
                 DispatchQueue.main.async {
                     self.isFocusManual = false
                     self.isFocusExposureLocked = false
-                    self.focusPosition = Double(camera.lensPosition)
+                    self.focusPosition = focusedPosition
                     self.focusIndicatorPoint = displayPoint
                     self.statusMessage = lockAfterFocus
                         ? "Фиксирую фокус и экспозицию…"
@@ -652,12 +653,14 @@ final class CameraManager: NSObject, ObservableObject {
                                 return
                             }
 
-                            self.currentFocusPosition = Double(activeCamera.lensPosition)
+                            let lockedFocusPosition = Double(activeCamera.lensPosition)
+                            self.currentFocusPosition = lockedFocusPosition
+                            let exposureIsManual = activeCamera.exposureMode == .custom
                             DispatchQueue.main.async {
                                 self.isFocusExposureLocked = true
                                 self.isFocusManual = focusLocked
-                                self.focusPosition = self.currentFocusPosition
-                                self.statusMessage = self.isExposureManual
+                                self.focusPosition = lockedFocusPosition
+                                self.statusMessage = exposureIsManual
                                     ? "AF LOCK · ручная экспозиция"
                                     : "AE/AF LOCK"
                             }
