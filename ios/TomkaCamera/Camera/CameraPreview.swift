@@ -14,7 +14,8 @@ struct CameraPreview: UIViewRepresentable {
         view.previewLayer.videoGravity = .resizeAspectFill
         view.currentZoomFactor = zoomFactor
         view.maximumZoomFactor = maxZoomFactor
-        view.onFocus = { layerPoint, viewSize, shouldLock in
+        view.onFocus = { [weak view] layerPoint, viewSize, shouldLock in
+            guard let view else { return }
             let devicePoint = view.previewLayer.captureDevicePointConverted(
                 fromLayerPoint: layerPoint
             )
@@ -32,7 +33,8 @@ struct CameraPreview: UIViewRepresentable {
         uiView.previewLayer.session = session
         uiView.currentZoomFactor = zoomFactor
         uiView.maximumZoomFactor = maxZoomFactor
-        uiView.onFocus = { layerPoint, viewSize, shouldLock in
+        uiView.onFocus = { [weak uiView] layerPoint, viewSize, shouldLock in
+            guard let uiView else { return }
             let devicePoint = uiView.previewLayer.captureDevicePointConverted(
                 fromLayerPoint: layerPoint
             )
