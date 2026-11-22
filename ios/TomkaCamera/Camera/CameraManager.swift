@@ -39,6 +39,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
 
     private var cameraDevice: AVCaptureDevice?
+    @available(iOS 17.0, *)
+    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var burstPhotoDimensions: CMVideoDimensions?
     private var isConfigured = false
     private var captureDelegates: [Int64: PhotoFrameCaptureDelegate] = [:]
@@ -105,10 +107,12 @@ final class CameraManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
         installSessionObservers()
     }
 
     deinit {
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
         sessionObservers.forEach(NotificationCenter.default.removeObserver)
         let captureSession = session
         let queue = sessionQueue
@@ -301,6 +305,12 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 self.cameraDevice = camera
+                if #available(iOS 17.0, *) {
+                    self.rotationCoordinator = AVCaptureDevice.RotationCoordinator(
+                        device: camera,
+                        previewLayer: nil
+                    )
+                }
                 self.currentISO = Double(camera.iso)
                 self.currentFocusPosition = Double(camera.lensPosition)
 
@@ -905,7 +915,32 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         captureDelegates[identifier] = delegate
+        updatePhotoOutputRotation()
         photoOutput.capturePhoto(with: settings, delegate: delegate)
+    }
+
+    private func updatePhotoOutputRotation() {
+        guard let connection = photoOutput.connection(with: .video) else { return }
+
+        if #available(iOS 17.0, *), let rotationCoordinator {
+            let angle = rotationCoordinator.videoRotationAngleForHorizonLevelCapture
+            if connection.isVideoRotationAngleSupported(angle) {
+                connection.videoRotationAngle = angle
+            }
+            return
+        }
+
+        guard connection.isVideoOrientationSupported else { return }
+        switch UIDevice.current.orientation {
+        case .landscapeLeft:
+            connection.videoOrientation = .landscapeRight
+        case .landscapeRight:
+            connection.videoOrientation = .landscapeLeft
+        case .portraitUpsideDown:
+            connection.videoOrientation = .portraitUpsideDown
+        default:
+            connection.videoOrientation = .portrait
+        }
     }
 
     private func processCapturedFrames(_ frames: [Data], rawData: Data?) {
