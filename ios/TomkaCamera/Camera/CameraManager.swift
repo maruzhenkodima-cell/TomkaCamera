@@ -705,16 +705,17 @@ final class CameraManager: NSObject, ObservableObject {
             let lockedFocusPosition = Double(camera.lensPosition)
             currentFocusPosition = lockedFocusPosition
             let exposureIsManual = camera.exposureMode == .custom
+            let didLockFocus = focusLocked
             DispatchQueue.main.async {
                 self.isFocusExposureLocked = true
-                self.isFocusManual = focusLocked
+                self.isFocusManual = didLockFocus
                 self.focusPosition = lockedFocusPosition
                 self.statusMessage = exposureIsManual
                     ? "AF LOCK · ручная экспозиция"
                     : "AE/AF LOCK"
             }
         } catch {
-            publishError("Не удалось зафиксировать фокус и экспозицию: \\(error.localizedDescription)")
+            publishError("Не удалось зафиксировать фокус и экспозицию: \(error.localizedDescription)")
         }
     }
 
