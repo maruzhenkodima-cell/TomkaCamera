@@ -35,10 +35,10 @@ jobs:
             -sdk iphoneos \
             -configuration Release \
             -derivedDataPath build \
-            MARKETING_VERSION=0.1.3 \
-            CURRENT_PROJECT_VERSION=4 \
-            INFOPLIST_KEY_CFBundleShortVersionString=0.1.3 \
-            INFOPLIST_KEY_CFBundleVersion=4 \
+            MARKETING_VERSION=0.1.4 \
+            CURRENT_PROJECT_VERSION=5 \
+            INFOPLIST_KEY_CFBundleShortVersionString=0.1.4 \
+            INFOPLIST_KEY_CFBundleVersion=5 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO
 
@@ -49,15 +49,15 @@ jobs:
           test -f "$INFO_PLIST"
 
           if /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$INFO_PLIST" >/dev/null 2>&1; then
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.3" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 0.1.4" "$INFO_PLIST"
           else
-            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.1.3" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 0.1.4" "$INFO_PLIST"
           fi
 
           if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$INFO_PLIST" >/dev/null 2>&1; then
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 4" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 5" "$INFO_PLIST"
           else
-            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 4" "$INFO_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 5" "$INFO_PLIST"
           fi
 
           plutil -lint "$INFO_PLIST"
@@ -80,8 +80,8 @@ jobs:
           EXECUTABLE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$INFO_PLIST")
 
           test "$BUNDLE_ID" = "com.tomkaomka.TomkaCamera"
-          test "$SHORT_VERSION" = "0.1.3"
-          test "$BUILD_NUMBER" = "4"
+          test "$SHORT_VERSION" = "0.1.4"
+          test "$BUILD_NUMBER" = "5"
           echo "CFBundleShortVersionString=$SHORT_VERSION"
           echo "CFBundleVersion=$BUILD_NUMBER"
           test -x "$APP_PATH/$EXECUTABLE"
@@ -103,7 +103,7 @@ jobs:
           set -euo pipefail
           APP_PATH="build/Build/Products/Release-iphoneos/TomkaCamera.app"
           IPA_ROOT="$RUNNER_TEMP/tomkacamera-ipa"
-          IPA_PATH="$GITHUB_WORKSPACE/TomkaCamera-beta-0.1.3-unsigned.ipa"
+          IPA_PATH="$GITHUB_WORKSPACE/TomkaCamera-beta-0.1.4-unsigned.ipa"
 
           rm -rf "$IPA_ROOT"
           mkdir -p "$IPA_ROOT/Payload"
@@ -118,7 +118,7 @@ jobs:
       - name: Upload install package
         uses: actions/upload-artifact@v4
         with:
-          name: TomkaCamera-beta-0.1.3-unsigned-IPA
-          path: TomkaCamera-beta-0.1.3-unsigned.ipa
+          name: TomkaCamera-beta-0.1.4-unsigned-IPA
+          path: TomkaCamera-beta-0.1.4-unsigned.ipa
           if-no-files-found: error
           retention-days: 30
