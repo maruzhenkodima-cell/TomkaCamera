@@ -50,14 +50,25 @@ final class PreviewView: UIView {
 
     override init(frame: CGRect) {
         super.init(frame: frame)
+        backgroundColor = .black
+        previewLayer.videoGravity = .resizeAspectFill
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        backgroundColor = .black
+        previewLayer.videoGravity = .resizeAspectFill
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         addGestureRecognizer(tap)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        // Keep AVCaptureVideoPreviewLayer aligned with the full UIView bounds
+        // after SwiftUI expands this representable into the device's safe areas.
+        previewLayer.frame = bounds
     }
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
