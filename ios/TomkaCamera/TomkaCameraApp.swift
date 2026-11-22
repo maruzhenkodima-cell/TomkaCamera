@@ -8,7 +8,7 @@ struct TomkaCameraApp: App {
             // ContentView also ignores safe areas, but applying it here ensures the
             // hosting root receives the full window proposal, not only the safe-area box.
             GeometryReader { geometry in
-                ContentView()
+                ContentView(screenSize: geometry.size)
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .ignoresSafeArea(.all, edges: .all)
             }
@@ -25,6 +25,8 @@ private enum CameraSheet: String, Identifiable {
 }
 
 struct ContentView: View {
+    let screenSize: CGSize
+
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraManager()
     @State private var activeSheet: CameraSheet?
@@ -152,8 +154,8 @@ struct ContentView: View {
                 Text("TOMKA CAMERA")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .tracking(1.5)
-                Text("BETA 0.1.5")
-                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                Text("BETA 0.1.5 · \(Int(screenSize.width))×\(Int(screenSize.height)) pt")
+                    .font(.system(size: 8, weight: .semibold, design: .rounded))
                     .tracking(2)
                     .foregroundStyle(.white.opacity(0.58))
             }
