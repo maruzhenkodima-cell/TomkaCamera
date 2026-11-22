@@ -53,6 +53,8 @@ final class CameraManager: NSObject, ObservableObject {
     private var savedBurstModes: SavedAutomaticModes?
     private var shouldRunSession = true
     private var sessionObservers: [NSObjectProtocol] = []
+    // Accessed only on sessionQueue; invalidates delayed locks after a newer tap.
+    private var focusOperationID = UUID()
 
     private struct SavedAutomaticModes {
         let exposure: AVCaptureDevice.ExposureMode?
@@ -86,6 +88,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var useProRAW = false
     @Published var showCompositionGrid = true
     @Published var focusIndicatorPoint: CGPoint?
+    @Published var isFocusExposureLocked = false
     @Published var zoomFactor: CGFloat = 1.0
     @Published var maxZoomFactor: CGFloat = 15.0
 
@@ -324,6 +327,24 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 self.cameraDevice = camera
+
+                // Start in continuous autofocus, auto exposure, and auto white balance.
+                try camera.lockForConfiguration()
+                if camera.isFocusModeSupported(.continuousAutoFocus) {
+                    camera.focusMode = .continuousAutoFocus
+                }
+                if camera.isSmoothAutoFocusSupported {
+                    camera.isSmoothAutoFocusEnabled = true
+                }
+                if camera.isExposureModeSupported(.continuousAutoExposure) {
+                    camera.exposureMode = .continuousAutoExposure
+                }
+                if camera.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+                    camera.whiteBalanceMode = .continuousAutoWhiteBalance
+                }
+                camera.isSubjectAreaChangeMonitoringEnabled = true
+                camera.unlockForConfiguration()
+
                 if #available(iOS 17.0, *) {
                     self.rotationCoordinator = AVCaptureDevice.RotationCoordinator(
                         device: camera,
@@ -546,7 +567,11 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
-    func focus(at devicePoint: CGPoint, displayPoint: CGPoint) {
+    func focus(
+        at devicePoint: CGPoint,
+        displayPoint: CGPoint,
+        lockAfterFocus: Bool = false
+    ) {
         sessionQueue.async {
             guard let camera = self.cameraDevice else { return }
 
@@ -554,22 +579,28 @@ final class CameraManager: NSObject, ObservableObject {
                 x: min(1, max(0, devicePoint.x)),
                 y: min(1, max(0, devicePoint.y))
             )
+            let operationID = UUID()
+            self.focusOperationID = operationID
 
             do {
                 try camera.lockForConfiguration()
 
                 if camera.isFocusPointOfInterestSupported {
                     camera.focusPointOfInterest = point
-                    if camera.isFocusModeSupported(.autoFocus) {
-                        camera.focusMode = .autoFocus
-                    } else if camera.isFocusModeSupported(.continuousAutoFocus) {
-                        camera.focusMode = .continuousAutoFocus
-                    }
                 }
 
-                if camera.exposureMode != .custom &&
-                    camera.exposureMode != .locked &&
-                    camera.isExposurePointOfInterestSupported {
+                // A normal tap starts continuous AF at the selected point. The long-press
+                // path waits briefly for AF/AE to settle, then locks the achieved settings.
+                if camera.isFocusModeSupported(.continuousAutoFocus) {
+                    camera.focusMode = .continuousAutoFocus
+                } else if camera.isFocusModeSupported(.autoFocus) {
+                    camera.focusMode = .autoFocus
+                }
+
+                let canAdjustExposure =
+                    camera.exposureMode != .custom &&
+                    camera.isExposurePointOfInterestSupported
+                if canAdjustExposure {
                     camera.exposurePointOfInterest = point
                     if camera.isExposureModeSupported(.continuousAutoExposure) {
                         camera.exposureMode = .continuousAutoExposure
@@ -579,18 +610,42 @@ final class CameraManager: NSObject, ObservableObject {
                 }
 
                 camera.unlockForConfiguration()
-                self.currentFocusPosition = Double(camera.lensPosition)
+                let focusedPosition = Double(camera.lensPosition)
 
                 DispatchQueue.main.async {
                     self.isFocusManual = false
-                    self.focusPosition = self.currentFocusPosition
+                    self.isFocusExposureLocked = false
+                    self.focusPosition = focusedPosition
                     self.focusIndicatorPoint = displayPoint
-                    self.statusMessage = "Фокус и экспозамер обновлены"
+                    self.statusMessage = lockAfterFocus
+                        ? "Фиксирую фокус и экспозицию…"
+                        : (self.isExposureManual
+                            ? "Автофокусировка"
+                            : "Автофокус и автоэкспозиция")
                 }
 
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    if self.focusIndicatorPoint == displayPoint {
-                        self.focusIndicatorPoint = nil
+                if lockAfterFocus {
+                    self.sessionQueue.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+                        guard let self else { return }
+                        self.finishFocusAndExposureLock(
+                            for: camera,
+                            operationID: operationID,
+                            attemptsRemaining: 8
+                        )
+                    }
+                } else {
+                    self.sessionQueue.asyncAfter(deadline: .now() + 1.7) { [weak self] in
+                        guard let self,
+                              self.focusOperationID == operationID else { return }
+                        DispatchQueue.main.async {
+                            guard !self.isFocusExposureLocked,
+                                  self.focusIndicatorPoint == displayPoint else { return }
+                            self.focusIndicatorPoint = nil
+                            if self.statusMessage == "Автофокусировка" ||
+                                self.statusMessage == "Автофокус и автоэкспозиция" {
+                                self.statusMessage = nil
+                            }
+                        }
                     }
                 }
             } catch {
@@ -599,8 +654,75 @@ final class CameraManager: NSObject, ObservableObject {
         }
     }
 
+    private func finishFocusAndExposureLock(
+        for camera: AVCaptureDevice,
+        operationID: UUID,
+        attemptsRemaining: Int
+    ) {
+        guard focusOperationID == operationID,
+              cameraDevice === camera else { return }
+
+        // Let the autofocus/exposure systems finish their first adjustment before
+        // sampling the lens position and locking the device.
+        if attemptsRemaining > 0 &&
+            (camera.isAdjustingFocus || camera.isAdjustingExposure) {
+            sessionQueue.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                self?.finishFocusAndExposureLock(
+                    for: camera,
+                    operationID: operationID,
+                    attemptsRemaining: attemptsRemaining - 1
+                )
+            }
+            return
+        }
+
+        do {
+            try camera.lockForConfiguration()
+
+            var focusLocked = false
+            if camera.isFocusModeSupported(.locked) {
+                camera.setFocusModeLocked(
+                    lensPosition: camera.lensPosition,
+                    completionHandler: nil
+                )
+                focusLocked = true
+            }
+
+            var exposureLocked = false
+            if camera.exposureMode != .custom &&
+                camera.isExposureModeSupported(.locked) {
+                camera.exposureMode = .locked
+                exposureLocked = true
+            }
+
+            camera.unlockForConfiguration()
+
+            guard focusLocked || exposureLocked else {
+                publishError("Эта камера не поддерживает фиксацию фокуса и экспозиции.")
+                return
+            }
+
+            let lockedFocusPosition = Double(camera.lensPosition)
+            currentFocusPosition = lockedFocusPosition
+            let exposureIsManual = camera.exposureMode == .custom
+            let didLockFocus = focusLocked
+            DispatchQueue.main.async {
+                self.isFocusExposureLocked = true
+                self.isFocusManual = didLockFocus
+                self.focusPosition = lockedFocusPosition
+                self.statusMessage = exposureIsManual
+                    ? "AF LOCK · ручная экспозиция"
+                    : "AE/AF LOCK"
+            }
+        } catch {
+            publishError("Не удалось зафиксировать фокус и экспозицию: \(error.localizedDescription)")
+        }
+    }
+
+
     func setFocus(_ position: Double) {
         sessionQueue.async {
+            self.focusOperationID = UUID()
             guard let camera = self.cameraDevice,
                   camera.isFocusModeSupported(.locked) else {
                 self.publishError("Ручная фокусировка недоступна.")
@@ -621,6 +743,7 @@ final class CameraManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self.focusPosition = value
                     self.isFocusManual = true
+                    self.isFocusExposureLocked = false
                 }
             } catch {
                 self.publishError("Не удалось настроить фокус: \(error.localizedDescription)")
@@ -671,6 +794,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     func enableAutomaticControls() {
         sessionQueue.async {
+            self.focusOperationID = UUID()
             guard let camera = self.cameraDevice else { return }
 
             do {
@@ -696,16 +820,24 @@ final class CameraManager: NSObject, ObservableObject {
                     for: camera.deviceWhiteBalanceGains
                 )
                 self.currentTemperature = Double(temperatureAndTint.temperature)
+                self.currentExposureBias = 0
+
+                // Snapshot queue-confined device values before publishing UI state.
+                let restoredISO = self.currentISO
+                let restoredFocus = self.currentFocusPosition
+                let restoredShutter = self.currentShutterPosition
+                let restoredTemperature = self.currentTemperature
 
                 DispatchQueue.main.async {
-                    self.isoValue = self.currentISO
-                    self.focusPosition = self.currentFocusPosition
-                    self.shutterPosition = self.currentShutterPosition
-                    self.colorTemperature = self.currentTemperature
+                    self.isoValue = restoredISO
+                    self.focusPosition = restoredFocus
+                    self.shutterPosition = restoredShutter
+                    self.colorTemperature = restoredTemperature
                     self.isExposureManual = false
                     self.isFocusManual = false
                     self.isWhiteBalanceManual = false
-                    self.currentExposureBias = 0
+                    self.isFocusExposureLocked = false
+                    self.focusIndicatorPoint = nil
                     self.exposureBias = 0
                     self.statusMessage = "Автоматические настройки включены"
                 }

@@ -28,9 +28,6 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var camera = CameraManager()
     @State private var activeSheet: CameraSheet?
-    @State private var pinchStartZoom: CGFloat = 1
-    @State private var isPinching = false
-
     private let zoomPresets: [CGFloat] = [1, 2, 3, 5, 10, 15]
 
     var body: some View {
@@ -38,24 +35,20 @@ struct ContentView: View {
             Color.black.ignoresSafeArea()
 
             if camera.isAuthorized {
-                CameraPreview(session: camera.session) { devicePoint, displayPoint in
-                    camera.focus(at: devicePoint, displayPoint: displayPoint)
-                }
-                .ignoresSafeArea()
-                .simultaneousGesture(
-                    MagnificationGesture()
-                        .onChanged { magnification in
-                            if !isPinching {
-                                pinchStartZoom = camera.zoomFactor
-                                isPinching = true
-                            }
-                            camera.setZoom(pinchStartZoom * magnification)
-                        }
-                        .onEnded { magnification in
-                            camera.setZoom(pinchStartZoom * magnification)
-                            isPinching = false
-                        }
+                CameraPreview(
+                    session: camera.session,
+                    zoomFactor: camera.zoomFactor,
+                    maxZoomFactor: camera.maxZoomFactor,
+                    onFocus: { devicePoint, displayPoint, shouldLock in
+                        camera.focus(
+                            at: devicePoint,
+                            displayPoint: displayPoint,
+                            lockAfterFocus: shouldLock
+                        )
+                    },
+                    onZoom: { camera.setZoom($0) }
                 )
+                .ignoresSafeArea()
                 .zIndex(0)
 
                 if camera.showCompositionGrid {
@@ -68,7 +61,10 @@ struct ContentView: View {
 
                 GeometryReader { geometry in
                     if let point = camera.focusIndicatorPoint {
-                        FocusReticle()
+                        FocusReticle(
+                            isLocked: camera.isFocusExposureLocked,
+                            isExposureManual: camera.isExposureManual
+                        )
                             .position(
                                 x: point.x * geometry.size.width,
                                 y: point.y * geometry.size.height
@@ -401,6 +397,7 @@ struct ContentView: View {
                         .cameraChromeGlass(in: Capsule())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Capsule())
                 .disabled(!camera.isAuthorized || camera.maxZoomFactor + 0.01 < preset)
                 .opacity(camera.maxZoomFactor + 0.01 < preset ? 0.34 : 1)
                 .accessibilityLabel("Увеличение \(Int(preset))×")
@@ -427,6 +424,13 @@ private struct CameraSettingsView: View {
     let onDismiss: () -> Void
     @State private var diagnosticsURL: URL?
     @State private var diagnosticsError: String?
+
+    private var appVersionText: String {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info["CFBundleVersion"] as? String ?? "—"
+        return "\(version) (\(build))"
+    }
 
     var body: some View {
         NavigationStack {
@@ -598,9 +602,22 @@ private struct CameraSettingsView: View {
                 }
 
                 Section {
-                    Text("Коснись нужной области видоискателя для фокусировки. EV работает в автоматическом режиме экспозиции. ProRAW сохраняет DNG и обработанную копию.")
+                    Text("Коснись области видоискателя, чтобы сфокусироваться и выполнить экспозамер. Удерживай палец около половины секунды, чтобы зафиксировать AE/AF. Коснись повторно для возврата к автофокусу.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Section {
+                    HStack {
+                        Text("Tomka Camera")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(appVersionText)
+                            .font(.footnote.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Версия приложения \(appVersionText)")
                 }
             }
             .navigationTitle("Настройки камеры")
@@ -716,17 +733,37 @@ private struct CompositionGrid: Shape {
 }
 
 private struct FocusReticle: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 5)
-                .stroke(.yellow, lineWidth: 1.5)
-                .frame(width: 72, height: 72)
+    let isLocked: Bool
+    let isExposureManual: Bool
 
-            Circle()
-                .stroke(.yellow.opacity(0.9), lineWidth: 1)
-                .frame(width: 7, height: 7)
+    var body: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 5)
+                    .stroke(isLocked ? .yellow : .yellow.opacity(0.9), lineWidth: isLocked ? 2 : 1.5)
+                    .frame(width: 72, height: 72)
+
+                Circle()
+                    .stroke(.yellow.opacity(0.9), lineWidth: 1)
+                    .frame(width: 7, height: 7)
+            }
+
+            if isLocked {
+                HStack(spacing: 4) {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 8, weight: .bold))
+                    Text(isExposureManual ? "AF LOCK" : "AE/AF LOCK")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .tracking(0.5)
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(.yellow, in: Capsule())
+            }
         }
         .shadow(color: .black.opacity(0.65), radius: 2)
         .transition(.opacity)
+        .animation(.easeOut(duration: 0.18), value: isLocked)
     }
 }
