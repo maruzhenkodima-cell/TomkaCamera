@@ -148,13 +148,17 @@ struct ContentView: View {
         }
     }
 
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "DEV"
+    }
+
     private var topBar: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
                 Text("TOMKA CAMERA")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .tracking(1.5)
-                Text("BETA 0.1.5 · \(Int(screenSize.width))×\(Int(screenSize.height)) pt")
+                Text("BETA \(appVersion) · \(Int(screenSize.width))×\(Int(screenSize.height)) pt")
                     .font(.system(size: 8, weight: .semibold, design: .rounded))
                     .tracking(2)
                     .foregroundStyle(.white.opacity(0.58))
@@ -321,6 +325,8 @@ struct ContentView: View {
 private struct CameraSettingsView: View {
     @ObservedObject var camera: CameraManager
     let onDismiss: () -> Void
+    @State private var diagnosticsURL: URL?
+    @State private var diagnosticsError: String?
 
     var body: some View {
         NavigationStack {
@@ -355,6 +361,31 @@ private struct CameraSettingsView: View {
                     }
 
                     Toggle("Сетка третей", isOn: $camera.showCompositionGrid)
+                }
+
+                Section("Диагностика") {
+                    Text("Технический JSON-отчёт о последних 100 снимках. Фотографии и GPS-координаты в отчёт не включаются.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Button("Подготовить отчёт JSON") {
+                        diagnosticsURL = camera.exportDiagnostics()
+                        diagnosticsError = diagnosticsURL == nil
+                            ? "Не удалось сформировать отчёт."
+                            : nil
+                    }
+
+                    if let diagnosticsURL {
+                        ShareLink(item: diagnosticsURL) {
+                            Label("Поделиться отчётом", systemImage: "square.and.arrow.up")
+                        }
+                    }
+
+                    if let diagnosticsError {
+                        Text(diagnosticsError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 Section("Экспозиция") {
