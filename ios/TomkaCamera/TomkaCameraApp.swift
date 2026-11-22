@@ -436,14 +436,26 @@ private struct CameraSettingsView: View {
         NavigationStack {
             Form {
                 Section("Съёмка") {
-                    Picker("Вспышка", selection: $camera.flashMode) {
+                    Picker(
+                        "Вспышка",
+                        selection: Binding(
+                            get: { camera.flashMode },
+                            set: { camera.setFlashMode($0) }
+                        )
+                    ) {
                         ForEach(camera.availableFlashModes) { mode in
                             Text(mode.title).tag(mode)
                         }
                     }
 
-                    Toggle("Серия из 3 кадров", isOn: $camera.multiFrameEnabled)
-                        .disabled(camera.useProRAW || camera.flashMode != .off)
+                    Toggle(
+                        "Серия из 3 кадров",
+                        isOn: Binding(
+                            get: { camera.multiFrameEnabled },
+                            set: { camera.setMultiFrameEnabled($0) }
+                        )
+                    )
+                    .disabled(camera.useProRAW || camera.flashMode != .off)
 
                     if camera.flashMode != .off {
                         Text("Серия временно недоступна со вспышкой: для стабильного совмещения трёх кадров нужна одинаковая подсветка.")
@@ -455,8 +467,14 @@ private struct CameraSettingsView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    Toggle("Apple ProRAW (DNG)", isOn: $camera.useProRAW)
-                        .disabled(!camera.proRAWAvailable)
+                    Toggle(
+                        "Apple ProRAW (DNG)",
+                        isOn: Binding(
+                            get: { camera.useProRAW },
+                            set: { camera.setProRAWEnabled($0) }
+                        )
+                    )
+                    .disabled(!camera.proRAWAvailable)
 
                     if !camera.proRAWAvailable {
                         Text("ProRAW недоступен в текущей конфигурации камеры.")
