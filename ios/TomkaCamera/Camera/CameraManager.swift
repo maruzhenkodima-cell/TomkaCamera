@@ -1,7 +1,6 @@
 import AVFoundation
 import Combine
 import Photos
-import UniformTypeIdentifiers
 import UIKit
 
 enum CameraFlashMode: String, CaseIterable, Identifiable {
@@ -254,6 +253,13 @@ final class CameraManager: NSObject, ObservableObject {
                     return
                 }
                 self.session.addOutput(self.photoOutput)
+
+                // Enable Apple's content-aware lens correction before startRunning.
+                // It corrects wide-angle edge distortion while preserving natural-looking
+                // subjects; the system may make a small scene-dependent FOV adjustment.
+                if self.photoOutput.isContentAwareDistortionCorrectionSupported {
+                    self.photoOutput.isContentAwareDistortionCorrectionEnabled = true
+                }
 
                 // Use the largest supported size for single shots and ProRAW.
                 // Three full-resolution frames can use a lot of memory, so burst capture
@@ -953,7 +959,7 @@ final class CameraManager: NSObject, ObservableObject {
 
                 let finalMessage = rawData == nil
                     ? saveMessage
-                    : saveMessage + " RAW-файл сохранён отдельно."
+                    : saveMessage + " ProRAW (DNG) и обработанная копия сохранены вместе."
 
                 self.savePhotoToLibrary(
                     result.outputData,
@@ -1028,10 +1034,9 @@ final class CameraManager: NSObject, ObservableObject {
             let request = PHAssetCreationRequest.forAsset()
 
             if let rawFileURL {
-                // Store the DNG as the main/original resource using a file URL.
+                // Follow Apple's documented RAW + rendered companion pairing.
+                // The .dng filename lets Photos infer the RAW container type.
                 let rawOptions = PHAssetResourceCreationOptions()
-                rawOptions.originalFilename = rawFileURL.lastPathComponent
-                rawOptions.uniformTypeIdentifier = "com.adobe.raw-image"
                 rawOptions.shouldMoveFile = true
                 request.addResource(
                     with: .photo,
@@ -1039,14 +1044,11 @@ final class CameraManager: NSObject, ObservableObject {
                     options: rawOptions
                 )
 
-                // Keep the rendered JPEG as the paired alternate resource.
-                let renderedOptions = PHAssetResourceCreationOptions()
-                renderedOptions.originalFilename = "TomkaCamera.jpg"
-                renderedOptions.uniformTypeIdentifier = UTType.jpeg.identifier
+                // Store the processed JPEG as the asset's alternate photo resource.
                 request.addResource(
                     with: .alternatePhoto,
                     data: data,
-                    options: renderedOptions
+                    options: nil
                 )
             } else {
                 request.addResource(with: .photo, data: data, options: nil)

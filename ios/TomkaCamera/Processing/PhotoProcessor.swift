@@ -22,18 +22,29 @@ enum PhotoProcessor {
         .cacheIntermediates: false
     ])
 
-    // Load the precompiled Metal Core Image kernel. This avoids the deprecated
-    // Core Image Kernel Language source initializer and compiles the shader at build time.
-    private static let medianKernel: CIColorKernel? = {
+    // Reuse one precompiled Metal library for both two- and three-frame fusion.
+    private static let metalLibraryData: Data? = {
         guard let url = Bundle.main.url(
             forResource: "PhotoKernels",
             withExtension: "ci.metallib"
-        ), let data = try? Data(contentsOf: url) else {
+        ) else {
             return nil
         }
+        return try? Data(contentsOf: url)
+    }()
 
+    private static let adaptiveMergeTwoKernel: CIColorKernel? = {
+        guard let data = metalLibraryData else { return nil }
         return try? CIColorKernel(
-            functionName: "median3",
+            functionName: "adaptiveMerge2",
+            fromMetalLibraryData: data
+        )
+    }()
+
+    private static let adaptiveMergeThreeKernel: CIColorKernel? = {
+        guard let data = metalLibraryData else { return nil }
+        return try? CIColorKernel(
+            functionName: "adaptiveMerge3",
             fromMetalLibraryData: data
         )
     }()
@@ -199,11 +210,20 @@ enum PhotoProcessor {
         let mergedImage: CIImage
 
         if croppedImages.count == 3,
-           let median = medianKernel?.apply(
+           let adaptiveMerge = adaptiveMergeThreeKernel?.apply(
             extent: commonExtent,
             arguments: croppedImages
            ) {
-            mergedImage = median
+            // Average matching pixels for better noise reduction; at moving edges,
+            // select one complete source pixel by luminance to avoid color fringes.
+            mergedImage = adaptiveMerge
+        } else if croppedImages.count == 2,
+                  let adaptiveMerge = adaptiveMergeTwoKernel?.apply(
+                    extent: commonExtent,
+                    arguments: croppedImages
+                  ) {
+            // With two frames, keep the reference pixel wherever the samples disagree.
+            mergedImage = adaptiveMerge
         } else {
             guard let average = average(croppedImages, extent: commonExtent) else {
                 throw ProcessingError.mergeFailed
@@ -227,7 +247,10 @@ enum PhotoProcessor {
         sharpen?.setValue(0.2, forKey: "inputSharpness")
 
         let finalImage = (sharpen?.outputImage ?? denoised).cropped(to: commonExtent)
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)
+        // Keep the source image's wide-gamut profile when available instead of
+        // silently converting every fused photo to sRGB.
+        let colorSpace = reference.colorSpace
+            ?? CGColorSpace(name: CGColorSpace.sRGB)
             ?? CGColorSpaceCreateDeviceRGB()
 
         guard let outputCGImage = context.createCGImage(
@@ -248,7 +271,7 @@ enum PhotoProcessor {
         let sourceMetadata = metadata(from: firstData)
         let outputData = try jpegData(
             from: outputCGImage,
-            quality: 0.97,
+            quality: 0.99,
             preserving: sourceMetadata
         )
 
@@ -257,12 +280,12 @@ enum PhotoProcessor {
 
         if usedHighResolutionUpscale {
             processingDescription = String(
-                format: "Объединено %d кадра · Lanczos-увеличение %.2f× · медианное подавление выбросов",
+                format: "Объединено %d кадра · Lanczos-увеличение %.2f× · адаптивное объединение с сохранением цвета",
                 alignedFrames.count,
                 outputScale
             )
         } else if alignedFrames.count == 3 {
-            processingDescription = "Объединено 3 кадра · подавлены шум и одиночные артефакты"
+            processingDescription = "Объединено 3 кадра · адаптивное подавление шума и движения"
         } else {
             processingDescription = String(
                 format: "Объединено %d кадра · подавление шума",
@@ -314,7 +337,7 @@ enum PhotoProcessor {
 
             guard let observation = request.results?.first
                     as? VNImageTranslationAlignmentObservation,
-                  observation.confidence >= 0.35 else {
+                  observation.confidence >= 0.5 else {
                 return nil
             }
 
@@ -327,8 +350,8 @@ enum PhotoProcessor {
 
             guard translationX.isFinite,
                   translationY.isFinite,
-                  abs(translationX) < reference.extent.width * 0.05,
-                  abs(translationY) < reference.extent.height * 0.05 else {
+                  abs(translationX) < reference.extent.width * 0.03,
+                  abs(translationY) < reference.extent.height * 0.03 else {
                 return nil
             }
 
