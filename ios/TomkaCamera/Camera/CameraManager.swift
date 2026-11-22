@@ -39,8 +39,8 @@ final class CameraManager: NSObject, ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
 
     private var cameraDevice: AVCaptureDevice?
-    @available(iOS 17.0, *)
-    private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
+    // Stored without an availability annotation; cast only inside an iOS 17+ check.
+    private var rotationCoordinator: AnyObject?
     private var burstPhotoDimensions: CMVideoDimensions?
     private var isConfigured = false
     private var captureDelegates: [Int64: PhotoFrameCaptureDelegate] = [:]
@@ -922,8 +922,9 @@ final class CameraManager: NSObject, ObservableObject {
     private func updatePhotoOutputRotation() {
         guard let connection = photoOutput.connection(with: .video) else { return }
 
-        if #available(iOS 17.0, *), let rotationCoordinator {
-            let angle = rotationCoordinator.videoRotationAngleForHorizonLevelCapture
+        if #available(iOS 17.0, *),
+           let coordinator = rotationCoordinator as? AVCaptureDevice.RotationCoordinator {
+            let angle = coordinator.videoRotationAngleForHorizonLevelCapture
             if connection.isVideoRotationAngleSupported(angle) {
                 connection.videoRotationAngle = angle
             }
