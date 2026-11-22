@@ -10,6 +10,7 @@ struct PhotoProcessingResult {
     let outputData: Data
     let mergedFrameCount: Int
     let outputScale: CGFloat
+    let mergeBackend: String
     let usedHighResolutionUpscale: Bool
     let processingDescription: String
 }
@@ -74,6 +75,7 @@ enum PhotoProcessor {
                 outputData: firstData,
                 mergedFrameCount: 1,
                 outputScale: 1,
+                mergeBackend: "apple-passthrough",
                 usedHighResolutionUpscale: false,
                 processingDescription: "Одиночный кадр без объединения"
             )
@@ -121,6 +123,7 @@ enum PhotoProcessor {
                 outputData: firstData,
                 mergedFrameCount: 1,
                 outputScale: 1,
+                mergeBackend: "alignment-failed-original",
                 usedHighResolutionUpscale: false,
                 processingDescription: "Кадры не удалось надёжно совместить; сохранён оригинал"
             )
@@ -201,6 +204,7 @@ enum PhotoProcessor {
                 outputData: firstData,
                 mergedFrameCount: 1,
                 outputScale: 1,
+                mergeBackend: "invalid-common-region-original",
                 usedHighResolutionUpscale: false,
                 processingDescription: "Слишком малая общая область; сохранён оригинал"
             )
@@ -208,27 +212,35 @@ enum PhotoProcessor {
 
         let croppedImages = transformedImages.map { $0.cropped(to: commonExtent) }
         let mergedImage: CIImage
+        let mergeBackend: String
 
         if croppedImages.count == 3,
            let adaptiveMerge = adaptiveMergeThreeKernel?.apply(
             extent: commonExtent,
             arguments: croppedImages
            ) {
-            // Average matching pixels for better noise reduction; at moving edges,
-            // select one complete source pixel by luminance to avoid color fringes.
             mergedImage = adaptiveMerge
+            mergeBackend = "metal-adaptive-3"
         } else if croppedImages.count == 2,
                   let adaptiveMerge = adaptiveMergeTwoKernel?.apply(
                     extent: commonExtent,
                     arguments: croppedImages
                   ) {
-            // With two frames, keep the reference pixel wherever the samples disagree.
             mergedImage = adaptiveMerge
+            mergeBackend = "metal-adaptive-2"
         } else {
-            guard let average = average(croppedImages, extent: commonExtent) else {
-                throw ProcessingError.mergeFailed
-            }
-            mergedImage = average
+            // Never silently replace motion-aware fusion with a plain average:
+            // that can introduce ghosts while the UI still claims adaptive merging.
+            return PhotoProcessingResult(
+                originalImage: originalImage,
+                enhancedImage: originalImage,
+                outputData: firstData,
+                mergedFrameCount: 1,
+                outputScale: 1,
+                mergeBackend: "metal-unavailable-original",
+                usedHighResolutionUpscale: false,
+                processingDescription: "Metal-ядро недоступно; сохранён исходный кадр"
+            )
         }
 
         let noiseReduction = CIFilter(name: "CINoiseReduction")
@@ -299,6 +311,7 @@ enum PhotoProcessor {
             outputData: outputData,
             mergedFrameCount: alignedFrames.count,
             outputScale: outputScale,
+            mergeBackend: mergeBackend,
             usedHighResolutionUpscale: usedHighResolutionUpscale,
             processingDescription: processingDescription
         )
@@ -413,68 +426,6 @@ enum PhotoProcessor {
         filter.setValue(1.0, forKey: "inputAspectRatio")
 
         return filter.outputImage
-    }
-
-    private static func average(
-        _ images: [CIImage],
-        extent: CGRect
-    ) -> CIImage? {
-        guard !images.isEmpty else { return nil }
-
-        let weight = 1.0 / CGFloat(images.count)
-        var composite: CIImage?
-
-        for image in images {
-            guard let weighted = weightedImage(image, weight: weight) else {
-                return nil
-            }
-
-            if let current = composite {
-                guard let addition = CIFilter(name: "CIAdditionCompositing") else {
-                    return nil
-                }
-                addition.setValue(weighted, forKey: kCIInputImageKey)
-                addition.setValue(current, forKey: kCIInputBackgroundImageKey)
-
-                guard let output = addition.outputImage else {
-                    return nil
-                }
-                composite = output
-            } else {
-                composite = weighted
-            }
-        }
-
-        return composite?.cropped(to: extent)
-    }
-
-    private static func weightedImage(
-        _ image: CIImage,
-        weight: CGFloat
-    ) -> CIImage? {
-        guard let matrix = CIFilter(name: "CIColorMatrix") else {
-            return nil
-        }
-
-        matrix.setValue(image, forKey: kCIInputImageKey)
-        matrix.setValue(
-            CIVector(x: weight, y: 0, z: 0, w: 0),
-            forKey: "inputRVector"
-        )
-        matrix.setValue(
-            CIVector(x: 0, y: weight, z: 0, w: 0),
-            forKey: "inputGVector"
-        )
-        matrix.setValue(
-            CIVector(x: 0, y: 0, z: weight, w: 0),
-            forKey: "inputBVector"
-        )
-        matrix.setValue(
-            CIVector(x: 0, y: 0, z: 0, w: 1),
-            forKey: "inputAVector"
-        )
-
-        return matrix.outputImage
     }
 
     private static func metadata(from data: Data) -> [CFString: Any] {
