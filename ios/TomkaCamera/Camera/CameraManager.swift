@@ -1031,6 +1031,7 @@ final class CameraManager: NSObject, ObservableObject {
                 // Store the DNG as the main/original resource using a file URL.
                 let rawOptions = PHAssetResourceCreationOptions()
                 rawOptions.originalFilename = rawFileURL.lastPathComponent
+                rawOptions.contentType = UTType.dng
                 rawOptions.shouldMoveFile = true
                 request.addResource(
                     with: .photo,
