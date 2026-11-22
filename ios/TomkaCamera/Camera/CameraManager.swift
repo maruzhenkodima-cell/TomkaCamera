@@ -87,7 +87,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var showCompositionGrid = true
     @Published var focusIndicatorPoint: CGPoint?
     @Published var zoomFactor: CGFloat = 1.0
-    @Published var maxZoomFactor: CGFloat = 10.0
+    @Published var maxZoomFactor: CGFloat = 15.0
 
     @Published var isoValue: Double = 100
     @Published var minISO: Double = 25
@@ -104,6 +104,25 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isExposureManual = false
     @Published var isFocusManual = false
     @Published var isWhiteBalanceManual = false
+
+    // Keep capture modes mutually exclusive and update the UI state immediately.
+    func setMultiFrameEnabled(_ enabled: Bool) {
+        multiFrameEnabled = enabled && !useProRAW && flashMode == .off
+    }
+
+    func setProRAWEnabled(_ enabled: Bool) {
+        useProRAW = enabled && proRAWAvailable
+        if useProRAW {
+            multiFrameEnabled = false
+        }
+    }
+
+    func setFlashMode(_ mode: CameraFlashMode) {
+        flashMode = mode
+        if mode != .off {
+            multiFrameEnabled = false
+        }
+    }
 
     override init() {
         super.init()
@@ -314,7 +333,7 @@ final class CameraManager: NSObject, ObservableObject {
                 self.currentISO = Double(camera.iso)
                 self.currentFocusPosition = Double(camera.lensPosition)
 
-                let supportedZoom = min(CGFloat(10.0), camera.activeFormat.videoMaxZoomFactor)
+                let supportedZoom = min(CGFloat(15.0), camera.activeFormat.videoMaxZoomFactor)
                 let minimumISO = Double(camera.activeFormat.minISO)
                 let maximumISO = Double(camera.activeFormat.maxISO)
 
@@ -391,7 +410,7 @@ final class CameraManager: NSObject, ObservableObject {
         sessionQueue.async {
             guard let camera = self.cameraDevice else { return }
 
-            let deviceMaximum = min(CGFloat(10.0), camera.activeFormat.videoMaxZoomFactor)
+            let deviceMaximum = min(CGFloat(15.0), camera.activeFormat.videoMaxZoomFactor)
             let clampedFactor = max(1.0, min(factor, deviceMaximum))
 
             do {
